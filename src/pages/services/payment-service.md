@@ -1,0 +1,712 @@
+# Payment Service Analiz Dokümanı
+
+## 1. Amaç
+
+Bu doküman, `payment-service` içinde sanal POS entegrasyonuna uygun şekilde revize edilmiş tablo yapısının domain analizini ortaya koymak amacıyla hazırlanmıştır.
+
+Bu nedenle doküman yalnızca tablo açıklaması değil, aynı zamanda payment domain’inin veri modeli, sorumluluk sınırları, lifecycle yönetimi ve tasarım kararlarını da içerir.
+
+---
+
+## 2. Domain Kapsamı
+
+- Merchant ve user bazlı ödeme işlemlerini oluşturmak
+- Ödeme tiplerini ayırt etmek
+- Provider bağımlı ve provider bağımsız referansları saklamak
+- 3DS durumlarını takip etmek
+- Callback ve webhook event’lerini ayrı audit kayıtları olarak tutmak
+- İade süreçlerini ayrı model üzerinden yönetmek
+- Taksit ve BIN verileriyle ödeme akışını desteklemek
+- Merchant gelir, gider ve net kârlılık raporları üretmek
+- Gelecekte card tokenization desteğine açık olmak
+
+---
+
+## 3. Tablolar
+
+---
+
+## 3.1 Transaction
+
+Bu tablo payment domain’inin merkez tablosudur. Her ödeme denemesi veya ana tahsilat akışı burada temsil edilir.
+
+```prisma
+model Transaction {
+  id                     String            @id @default(cuid())
+  orderId                String            @unique
+  idempotencyKey         String?           @unique
+
+  userId                 String
+  merchantId             String
+
+  type                   TransactionType
+  relatedEntityType      String?
+  relatedEntityId        String?
+
+  provider               PaymentProvider
+  providerMerchantId     String?
+  providerTransactionId  String?
+  providerPaymentId      String?
+  providerConversationId String?
+  providerReferenceCode  String?
+
+  amount                 Decimal           @db.Decimal(18, 2)
+  taxAmount              Decimal           @db.Decimal(18, 2) @default(0)
+  currency               String            @default("TRY")
+  installment            Int               @default(1)
+
+  status                 TransactionStatus @default(INITIATED)
+  providerStatus         String?
+  failureReason          String?
+  errorCode              String?
+  errorMessage           String?
+
+  isThreeDSecure         Boolean           @default(false)
+  threeDSStatus          ThreeDSStatus     @default(NOT_REQUIRED)
+  mdStatus               String?
+  conversationData       String?
+  callbackUrl            String?
+  returnUrl              String?
+
+  binNumber              String?
+  lastFourDigits         String?
+  cardFamily             String?
+  cardAssociation        String?
+  cardBank               String?
+
+  description            String?
+  requestPayload         Json?
+  responsePayload        Json?
+
+  createdAt              DateTime          @default(now())
+  updatedAt              DateTime          @updatedAt
+
+  @@index([userId, merchantId])
+  @@index([merchantId, status, createdAt])
+  @@index([provider, providerPaymentId])
+}
+```
+
+### Alan grupları ve anlamları
+
+#### Kimlik ve idempotency alanları
+- `id`: sistem içi benzersiz transaction kimliği
+- `orderId`: business-level benzersiz sipariş/ödeme kimliği
+- `idempotencyKey`: aynı isteğin birden fazla kez işlenmesini engellemek için kullanılır
+
+Bu alanlar özellikle retry, timeout ve duplicate client request senaryolarında kritiktir.
+
+#### Taraf bilgileri
+- `userId`: ödemeyi yapan kullanıcı
+- `merchantId`: tahsilatın ait olduğu merchant
+
+Bu iki alan merchant bazlı gelir ve user bazlı geçmiş sorgularında temel eksendir.
+
+#### İş tipi ve ilişkili entity bilgileri
+- `type`
+- `relatedEntityType`
+- `relatedEntityId`
+
+Bu alanlar transaction’ı domain içinde anlamlandırır. Örneğin:
+- diet plan assignment
+- session booking
+- subscription order
+- package purchase
+
+#### Provider referans alanları
+- `provider`
+- `providerMerchantId`
+- `providerTransactionId`
+- `providerPaymentId`
+- `providerConversationId`
+- `providerReferenceCode`
+
+Bu alanlar provider tarafındaki kayıtlarla eşleştirme için gereklidir. Özellikle webhook, refund ve support süreçlerinde büyük önem taşır.
+
+#### Parasal alanlar
+- `amount`
+- `taxAmount`
+- `currency`
+- `installment`
+
+Buradaki önemli iyileştirme `Float` yerine `Decimal` kullanılmasıdır. Finansal doğruluk için bu kritik bir düzeltmedir.
+
+#### Durum ve hata yönetimi
+- `status`
+- `providerStatus`
+- `failureReason`
+- `errorCode`
+- `errorMessage`
+
+Bu alanlar hem domain-level hem provider-level hata takibini mümkün kılar.
+
+#### 3DS alanları
+- `isThreeDSecure`
+- `threeDSStatus`
+- `mdStatus`
+- `conversationData`
+- `callbackUrl`
+- `returnUrl`
+
+Bu alanlar 3D Secure entegrasyonunun verisel temelini oluşturur.
+
+#### Kart/BIN metadata alanları
+- `binNumber`
+- `lastFourDigits`
+- `cardFamily`
+- `cardAssociation`
+- `cardBank`
+
+Bu alanlar hem UI gösterimi hem raporlama hem de fraud/support operasyonları için değerlidir.
+
+#### Ham payload alanları
+- `requestPayload`
+- `responsePayload`
+
+Bu alanlar operasyonel debugging için çok değerlidir. Özellikle provider kaynaklı sorunların analizi sırasında faydalıdır.
+
+### Güçlü yönler
+
+- transaction lifecycle yeterince zengin
+- 3DS akışına uygun
+- idempotency düşünülmüş
+- provider referansları eklenmiş
+- parasal alanlar doğru tipe çevrilmiş
+- audit/debug için payload alanları mevcut
+
+### Dikkat edilmesi gerekenler
+
+- `requestPayload` ve `responsePayload` çok büyürse performans etkisi yaratabilir
+- hassas kart verisi asla tutulmamalı
+- `lastFourDigits` gibi sadece maskeli metadata tutulmalı
+- `providerStatus` string olduğu için mapping katmanı iyi tanımlanmalı
+
+---
+
+
+### 3.1.1 TransactionStatus
+
+```prisma
+enum TransactionStatus {
+  INITIATED
+  PENDING
+  REQUIRES_3DS
+  THREE_DS_CALLBACK_RECEIVED
+  AUTHORIZED
+  SUCCESS
+  FAILED
+  CANCELLED
+  REFUNDED
+  PARTIAL_REFUNDED
+  EXPIRED
+}
+```
+
+- `INITIATED`: transaction oluşturuldu, henüz provider çağrısı yapılmadı veya yeni başladı
+- `PENDING`: provider tarafında işlem sürüyor
+- `REQUIRES_3DS`: işlem 3D Secure adımı gerektiriyor
+- `THREE_DS_CALLBACK_RECEIVED`: kullanıcı banka ekranından geri döndü, ancak final doğrulama henüz tamamlanmadı
+- `AUTHORIZED`: provizyon alındı
+- `SUCCESS`: tahsilat başarıyla tamamlandı
+- `FAILED`: işlem başarısız oldu
+- `CANCELLED`: işlem iptal edildi
+- `REFUNDED`: tam iade yapıldı
+- `PARTIAL_REFUNDED`: kısmi iade yapıldı
+- `EXPIRED`: işlem süresi doldu
+
+---
+
+### 3.1.2 TransactionType
+
+Bu enum, bir transaction’ın hangi iş anlamına geldiğini belirler.
+Muhasebesel ayrım, dashboard segmentasyonu ve use-case routing açısından gereklidir.
+
+```prisma
+enum TransactionType {
+  DIET_PLAN
+  SESSION
+  PACKAGE
+  SUBSCRIPTION
+  MANUAL_CHARGE
+  OTHER
+}
+```
+
+- `DIET_PLAN`: diet plan satışı
+- `SESSION`: seans bazlı ödeme
+- `PACKAGE`: paket satışı
+- `SUBSCRIPTION`: abonelik ödemesi
+- `MANUAL_CHARGE`: manuel oluşturulmuş tahsilat
+- `OTHER`: henüz sınıflandırılmamış özel ödeme türleri
+
+---
+
+### 3.1.3 PaymentProvider
+
+Bu enum, transaction’ın hangi ödeme sağlayıcısı üzerinden yürüdüğünü belirtir.
+
+Provider bilgisinin tabloya yerleştirilmesi, sistemin gelecekte tek provider bağımlılığına hapsolmasını önler.
+
+- çoklu provider desteği
+- provider bazlı başarı oranı ölçümü
+- refund/cancel çağrılarında doğru adapter’ın seçilmesi
+- reconciliation süreçleri
+- webhook event’lerinin uygun provider handler’a yönlendirilmesi
+
+```prisma
+enum PaymentProvider {
+  IYZICO
+  PAYTR
+  CRAFTGATE
+  GARANTI
+  AKBANK
+  OTHER
+}
+```
+---
+
+### 3.1.4 ThreeDSStatus
+
+3D Secure akışı transaction status’ten ayrı bir alt yaşam döngüsüdür. Bu nedenle ayrıca modellenmesi doğrudur.
+
+Bu enum sayesinde transaction başarılı olmasa bile 3DS sürecinin ne aşamada kaldığı anlaşılır. Debug ve support için çok değerlidir.
+
+```prisma
+enum ThreeDSStatus {
+  NOT_REQUIRED
+  REQUIRED
+  INITIATED
+  CALLBACK_RECEIVED
+  VERIFIED
+  FAILED
+}
+```
+
+- `NOT_REQUIRED`: işlem için 3DS zorunlu değil
+- `REQUIRED`: 3DS gerekli
+- `INITIATED`: 3DS başlatıldı
+- `CALLBACK_RECEIVED`: kullanıcı banka ekranından döndü
+- `VERIFIED`: 3DS doğrulama tamamlandı
+- `FAILED`: 3DS başarısız oldu
+
+---
+
+
+## 3.2 PaymentWebhookEvent
+
+Provider’dan gelen webhook ve callback verilerini audit etmek, doğrulamak ve gerektiğinde yeniden işlemek.
+Bu veri transaction üstüne overwrite edilmemelidir. 
+
+Çünkü:
+- aynı webhook tekrar gelebilir
+- signature doğrulama sonucu saklanmalıdır
+- event yeniden işlenebilir olmalıdır
+- audit geçmişi korunmalıdır
+
+Bu tablo ödeme servisinin güvenilirliğini ciddi ölçüde artırır. Event-driven işlem mantığı için temel bileşendir.
+
+```prisma
+model PaymentWebhookEvent {
+  id               String          @id @default(cuid())
+  transactionId    String?
+  provider         PaymentProvider
+  eventType        String?
+  eventKey         String?         @unique
+  signature        String?
+  isSignatureValid Boolean?
+  payload          Json
+  receivedAt       DateTime        @default(now())
+  processedAt      DateTime?
+  processStatus    String?
+  errorMessage     String?
+
+  @@index([provider, receivedAt])
+  @@index([transactionId])
+}
+```
+
+- `transactionId`: event ile ilişkili transaction
+- `provider`: event’i gönderen provider
+- `eventType`: provider’ın event türü
+- `eventKey`: duplicate önleme için benzersiz event anahtarı
+- `signature`: gelen imza bilgisi
+- `isSignatureValid`: imza doğrulama sonucu
+- `payload`: ham webhook içeriği
+- `receivedAt`: sistemin event’i aldığı an
+- `processedAt`: event’in işlendiği an
+- `processStatus`: işleme sonucu
+- `errorMessage`: hata olduysa detay
+
+---
+
+## 3.3 Refund
+
+
+Tam ve kısmi iade işlemlerini transaction’dan bağımsız ama ilişkili şekilde modellemek.
+
+İade işlemleri transaction status alanına sıkıştırılmamalıdır. Çünkü:
+
+- bir transaction için birden fazla refund olabilir
+- kısmi iade olabilir
+- her iadenin provider cevabı farklı olabilir
+- refund request ve response ayrı audit gerektirir
+
+Refund ayrı model olarak ele alındığında payment domain’i daha doğru ve genişletilebilir hale gelir.
+
+```prisma
+model Refund {
+  id                    String          @id @default(cuid())
+  transactionId         String
+  provider              PaymentProvider
+  amount                Decimal         @db.Decimal(18, 2)
+  currency              String          @default("TRY")
+  reason                String?
+  providerRefundId      String?
+  providerReferenceCode String?
+  status                String
+  requestPayload        Json?
+  responsePayload       Json?
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+
+  @@index([transactionId])
+}
+```
+
+- `transactionId`: ana ödeme ile bağ kurar
+- `provider`: hangi provider üzerinden iade yapıldı
+- `amount`: iade edilen tutar
+- `reason`: iade sebebi
+- `providerRefundId`: provider refund kaydı
+- `providerReferenceCode`: dış sistem referansı
+- `status`: refund yaşam döngüsü
+- `requestPayload`, `responsePayload`: audit/debug
+
+---
+
+## 3.4 PaymentToken
+
+Provider tokenization ya da stored card desteği için kartın güvenli temsilini saklamak.
+
+Bu tabloda gerçek kart numarası, CVV veya PAN tutulmamalıdır.
+
+Yalnızca:
+- provider token
+- masked card metadata
+- kullanıcıya gösterilecek alias benzeri bilgiler
+
+saklanmalıdır.
+
+```prisma
+model PaymentToken {
+  id              String          @id @default(cuid())
+  userId          String
+  provider        PaymentProvider
+  token           String
+  cardAlias       String?
+  binNumber       String?
+  lastFourDigits  String?
+  cardFamily      String?
+  expireMonth     String?
+  expireYear      String?
+  isDefault       Boolean         @default(false)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@index([userId, provider])
+}
+```
+
+---
+
+## 3.5 BinInfo
+
+BIN sorgu sonuçlarını cache’lemek ve ödeme öncesi karar mekanizmalarında kullanmak.
+
+- kartın taksite uygun olup olmadığını görmek
+- banka ve kart ailesini göstermek
+- 3DS gereksinimi veya desteğini yorumlamak
+- aynı BIN için tekrar tekrar provider sorgusu yapmamak
+
+Bu tablo performans ve kullanıcı deneyimi açısından faydalıdır. Özellikle ödeme öncesi taksit ekranlarında önemli rol oynar.
+
+```prisma
+model BinInfo {
+  binNumber             String   @id
+  bankName              String?
+  cardAssociation       String?
+  cardFamily            String?
+  cardType              String?
+  supportsInstallment   Boolean?
+  supportsThreeDS       Boolean?
+  rawData               Json?
+  updatedAt             DateTime @updatedAt
+}
+```
+
+---
+
+## 3.10 PaymentOrder
+
+Payment intent / sipariş ile gerçek tahsilat denemesini ayırmak.
+Bazı sistemlerde “sipariş” ile “ödeme denemesi” aynı şey değildir.
+
+Örnek:
+- kullanıcı siparişi oluşturur
+- ilk ödeme denemesi başarısız olur
+- ikinci deneme yapılır
+- farklı provider denenir
+
+Bu durumda `PaymentOrder` üst kavram, `Transaction` ise ödeme denemesi olarak düşünülebilir.
+
+Bu tablo opsiyonel görünse de orta vadede sistemi ciddi şekilde rahatlatır. Retry ve alternative payment attempt senaryoları için iyi bir ayrımdır.
+
+```prisma
+model PaymentOrder {
+  id                String          @id @default(cuid())
+  orderNo           String          @unique
+  userId            String
+  merchantId        String
+  type              TransactionType
+  relatedEntityType String?
+  relatedEntityId   String?
+  amount            Decimal         @db.Decimal(18, 2)
+  currency          String          @default("TRY")
+  status            String
+  description       String?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+}
+```
+---
+
+## 3.11 DietPlanPrice
+
+Diet plan’ın merchant bazlı fiyatlandırmasını tutmak.
+Bu, fiyatlama tarafında finansal doğruluğu sağlar.
+
+```prisma
+model DietPlanPrice {
+  id            String   @id @default(cuid())
+  dietPlanId    String
+  merchantId    String
+  dietPlanTitle String
+  price         Decimal  @db.Decimal(18, 2)
+  currency      String   @default("TRY")
+  description   String?
+  validFrom     DateTime?
+  validTo       DateTime?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([dietPlanId, merchantId])
+}
+```
+
+- `dietPlanId`: diet-service tarafındaki plan referansı
+- `merchantId`: fiyatın hangi merchant’a ait olduğu
+- `dietPlanTitle`: snapshot amaçlı başlık
+- `price`: satış fiyatı
+- `validFrom`, `validTo`: kampanya veya dönemsel fiyatlandırma
+
+### Dikkat edilmesi gerekenler
+
+Servis katmanında şu kural olmalıdır:
+- aynı `merchantId + dietPlanId` için tarih aralıkları çakışan aktif fiyat kaydı açılamamalı
+
+---
+
+
+## 3.12 Expense
+
+Merchant bazlı gider takibi yapmak.
+Bu alan gider hesaplamalarında finansal doğruluğu artırır.
+
+```prisma
+model Expense {
+  id          String          @id @default(cuid())
+  merchantId  String
+  amount      Decimal         @db.Decimal(18, 2)
+  currency    String          @default("TRY")
+  category    ExpenseCategory @default(OTHER)
+  description String?
+  date        DateTime        @default(now())
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+
+  @@index([merchantId, date])
+}
+```
+- `merchantId`: gider sahibi merchant
+- `amount`: gider tutarı
+- `category`: gider tipi
+- `date`: gider tarihi
+- `description`: açıklama
+---
+
+### 3.12.1 ExpenseCategory
+
+Merchant giderlerini sınıflandırmak için yeterli ve anlaşılır bir başlangıç enum’udur.
+
+- gider raporları
+- kategori bazlı kârlılık analizi
+- dashboard dağılım grafikleri
+- gider kırılımı
+
+```prisma
+enum ExpenseCategory {
+  OFFICE
+  MARKETING
+  SOFTWARE
+  SALARY
+  TAX
+  OTHER
+}
+```
+---
+
+
+
+## 3.13 SessionReplica
+
+Başka bir servisteki seans bilgisini payment-service içinde projection/read model olarak tutmak.
+
+- raporlama performansı
+- servis bağımsızlığı
+- event-driven mimari ile uyum
+- completed/cancelled seans bazlı finansal KPI üretimi
+
+```prisma
+model SessionReplica {
+  id          String        @id
+  merchantId  String
+  status      SessionStatus @default(PENDING)
+  startDate   DateTime
+  endDate     DateTime
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@index([merchantId, startDate])
+}
+```
+
+### İleride geliştirilebilecek alanlar
+
+Gerekirse şu alanlar eklenebilir:
+
+- `clientId`
+- `relatedEntityId`
+- `sessionType`
+- `isBillable`
+
+---
+
+### 3.1.13 SessionStatus
+
+Session replica tarafı için yeterli bir başlangıç enum’udur. Finansal analiz açısından özellikle:
+
+- tamamlanan seans
+- iptal edilen seans
+
+ayrımı önemlidir.
+
+```prisma
+enum SessionStatus {
+  PENDING
+  COMPLETED
+  CANCELLED
+}
+```
+---
+
+
+## 4. Tablolar Arası Kavramsal İlişkiler
+
+### Merchant merkezli yapı
+
+Aşağıdaki tablolar merchant eksenlidir:
+
+- `Transaction`
+- `PaymentOrder`
+- `DietPlanPrice`
+- `Expense`
+- `SessionReplica`
+
+Bu çok doğru bir tasarımdır çünkü gelir-gider-kârlılık analizleri merchant merkezli yürütülür.
+
+### Transaction ve PaymentOrder ilişkisi
+
+- `PaymentOrder` üst business intent olabilir
+- `Transaction` ise gerçek ödeme denemesi olabilir
+
+Bu ayrım retry ve çoklu deneme senaryolarında önemlidir.
+
+### Transaction ve Refund ilişkisi
+
+- bir transaction için bir veya birden fazla refund olabilir
+- toplam refund tutarı ana transaction amount’unu aşmamalıdır
+
+### Transaction ve PaymentWebhookEvent ilişkisi
+
+- bir transaction’a birden fazla webhook event bağlanabilir
+- event işleme kayıtları transaction’dan bağımsız audit mantığında saklanmalıdır
+
+### Transaction ve DietPlanPrice ilişkisi
+
+Doğrudan foreign key yerine:
+- `relatedEntityType`
+- `relatedEntityId`
+
+ile esnek ilişki kurulmuştur.
+
+Bu, payment domain’inin diet-service’e sıkı bağlanmasını önler.
+
+---
+
+## 5. İş Kuralları
+
+### Transaction
+- `amount > 0`
+- `taxAmount >= 0`
+- `installment >= 1`
+- `currency` whitelist ile sınırlandırılmalı
+- `orderId` benzersiz olmalı
+- `idempotencyKey` duplicate request’i engellemeli
+
+### Refund
+- toplam refund tutarı transaction amount’u aşmamalı
+- yalnızca uygun statüdeki transaction’lara refund açılmalı
+- failed refund ile success refund ayrıştırılmalı
+
+### DietPlanPrice
+- `price >= 0`
+- `validFrom <= validTo`
+- çakışan aktif tarih aralığı engellenmeli
+
+### Expense
+- `amount > 0`
+- gider tarihi anlamlı olmalı
+- kategori enum dışına çıkmamalı
+
+### SessionReplica
+- `startDate < endDate`
+- source service event’leri ile güncellenmeli
+- manuel mutation mümkünse sınırlı olmalı
+
+---
+
+## 6. Raporlama Kullanım Senaryoları
+
+Bu revize yapı ile aşağıdaki çıktılar üretilebilir:
+
+- merchant bazlı toplam başarılı ödeme
+- merchant bazlı başarısız ödeme oranı
+- provider bazlı başarı oranı
+- 3DS başarı oranı
+- taksit bazlı satış dağılımı
+- toplam refund tutarı
+- partial refund oranı
+- aylık gelir / gider / net kâr
+- diet plan bazlı satış performansı
+- completed session başına gelir
+- cancelled session oranı
