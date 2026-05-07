@@ -22,6 +22,13 @@ const sidebars: SidebarsConfig = {
         'services/payment-service',
       ],
     },
+    {
+      type: 'category',
+      label: 'Linux Notes',
+      items: [
+        'linux/clearing-memory',
+      ],
+    },
   ],
   tutorialSidebar: [
     {
