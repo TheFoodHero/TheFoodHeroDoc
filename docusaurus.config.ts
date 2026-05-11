@@ -78,7 +78,7 @@ const config: Config = {
       title: 'TheFoodHero Tech',
       logo: {
         alt: 'TheFoodHero',
-        src: 'img/logo.svg',
+        src: 'img/logo.png',
       },
       items: [
         {

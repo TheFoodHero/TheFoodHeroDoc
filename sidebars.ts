@@ -20,6 +20,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'services/auth-service',
         'services/payment-service',
+        'services/chat-service'
       ],
     },
     {
