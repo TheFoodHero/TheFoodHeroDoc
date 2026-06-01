@@ -5,9 +5,9 @@ import type * as Preset from '@docusaurus/preset-classic';
 // This runs in Node.js - Don't use client-side code here (browser APIs, JSX...)
 
 const config: Config = {
-  title: 'TheFoodHero Tech Doc',
-  tagline: 'Technical Documantation',
-  favicon: 'img/favicon.ico',
+  title: 'TheFoodHero Tech',
+  tagline: 'Uygulama Rehberleri ve Yazılım Mimarisi Bilgi Merkezi',
+  favicon: 'img/favicon.png',
 
   // Future flags, see https://docusaurus.io/docs/api/docusaurus-config#future
   future: {
@@ -31,8 +31,8 @@ const config: Config = {
   // useful metadata like html lang. For example, if your site is Chinese, you
   // may want to replace "en" with "zh-Hans".
   i18n: {
-    defaultLocale: 'en',
-    locales: ['en'],
+    defaultLocale: 'tr',
+    locales: ['tr'],
   },
 
   presets: [
@@ -44,7 +44,7 @@ const config: Config = {
           // Please change this to your repo.
           // Remove this to remove the "edit this page" links.
           editUrl:
-            'https://github.com/facebook/docusaurus/tree/main/packages/create-docusaurus/templates/shared/',
+            'https://github.com/TheFoodHero/TheFoodHeroDoc/tree/main/',
         },
         blog: {
           showReadingTime: true,
@@ -55,7 +55,7 @@ const config: Config = {
           // Please change this to your repo.
           // Remove this to remove the "edit this page" links.
           editUrl:
-            'https://github.com/facebook/docusaurus/tree/main/packages/create-docusaurus/templates/shared/',
+            'https://github.com/TheFoodHero/TheFoodHeroDoc/tree/main/',
           // Useful options to enforce blogging best practices
           onInlineTags: 'warn',
           onInlineAuthors: 'warn',
@@ -77,7 +77,7 @@ const config: Config = {
     navbar: {
       title: 'TheFoodHero Tech',
       logo: {
-        alt: 'TheFoodHero',
+        alt: 'TheFoodHero Logo',
         src: 'img/logo.png',
       },
       items: [
@@ -85,22 +85,22 @@ const config: Config = {
           type: 'docSidebar',
           sidebarId: 'documentationSidebar',
           position: 'left',
-          label: 'Documentation',
+          label: 'Teknik Dokümantasyon',
         },
         {
           type: 'docSidebar',
           sidebarId: 'learningSidebar',
           position: 'left',
-          label: 'Learning',
+          label: 'Yazılım Prensipleri',
         },
         {
           type: 'docSidebar',
           sidebarId: 'tutorialSidebar',
           position: 'left',
-          label: 'Tutorial',
+          label: 'Rehberler & Eğitimler',
         },
         {
-          href: 'https://github.com/facebook/docusaurus',
+          href: 'https://github.com/TheFoodHero',
           label: 'GitHub',
           position: 'right',
         },
@@ -110,33 +110,29 @@ const config: Config = {
       style: 'dark',
       links: [
         {
-          title: 'Docs',
+          title: 'Dokümanlar',
           items: [
             {
-              label: 'Tutorial',
+              label: 'Giriş',
               to: '/docs/intro',
             },
+            {
+              label: 'Teknik Dokümantasyon',
+              to: '/docs/services/auth-service',
+            },
           ],
         },
         {
-          title: 'Community',
+          title: 'Topluluk & İletişim',
           items: [
             {
-              label: 'Stack Overflow',
-              href: 'https://stackoverflow.com/questions/tagged/docusaurus',
-            },
-            {
-              label: 'Discord',
-              href: 'https://discordapp.com/invite/docusaurus',
-            },
-            {
-              label: 'X',
-              href: 'https://x.com/docusaurus',
+              label: 'TheFoodHero Platform',
+              href: 'https://thefoodhero.tech',
             },
           ],
         },
         {
-          title: 'More',
+          title: 'Diğer',
           items: [
             {
               label: 'Blog',
@@ -144,12 +140,12 @@ const config: Config = {
             },
             {
               label: 'GitHub',
-              href: 'https://github.com/facebook/docusaurus',
+              href: 'https://github.com/TheFoodHero',
             },
           ],
         },
       ],
-      copyright: `Copyright © ${new Date().getFullYear()} My Project, Inc. Built with Docusaurus.`,
+      copyright: `Copyright © ${new Date().getFullYear()} TheFoodHero Tech. Built with Docusaurus.`,
     },
     prism: {
       theme: prismThemes.github,

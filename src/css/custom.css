@@ -1,30 +1,278 @@
-/**
- * Any CSS included here will be global. The classic template
- * bundles Infima by default. Infima is a CSS framework designed to
- * work well for content-centric websites.
- */
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap');
 
-/* You can override the default Infima variables here. */
 :root {
-  --ifm-color-primary: #2e8555;
-  --ifm-color-primary-dark: #29784c;
-  --ifm-color-primary-darker: #277148;
-  --ifm-color-primary-darkest: #205d3b;
-  --ifm-color-primary-light: #33925d;
-  --ifm-color-primary-lighter: #359962;
-  --ifm-color-primary-lightest: #3cad6e;
-  --ifm-code-font-size: 95%;
-  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.1);
+  /* Brand Primary: Emerald */
+  --ifm-color-primary: #047857;
+  --ifm-color-primary-dark: #036448;
+  --ifm-color-primary-darker: #035c43;
+  --ifm-color-primary-darkest: #024c37;
+  --ifm-color-primary-light: #058c66;
+  --ifm-color-primary-lighter: #05976d;
+  --ifm-color-primary-lightest: #07b684;
+  
+  /* Brand Secondary: Orange */
+  --brand-secondary: #fb923c;
+  --brand-secondary-dark: #ea580c;
+  --brand-secondary-light: #fed7aa;
+  
+  --ifm-font-family-base: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --ifm-code-font-size: 90%;
+  --docusaurus-highlighted-code-line-bg: rgba(4, 120, 87, 0.1);
+  
+  /* Layout details */
+  --ifm-background-color: #f8fafc;
+  --card-bg-custom: #ffffff;
+  --card-border-custom: rgba(4, 120, 87, 0.08);
+  --hero-bg-gradient: linear-gradient(135deg, #064e3b 0%, #022c22 100%);
+  --hero-text-color: #ffffff;
 }
 
-/* For readability concerns, you should choose a lighter palette in dark mode. */
 [data-theme='dark'] {
-  --ifm-color-primary: #25c2a0;
-  --ifm-color-primary-dark: #21af90;
-  --ifm-color-primary-darker: #1fa588;
-  --ifm-color-primary-darkest: #1a8870;
-  --ifm-color-primary-light: #29d5b0;
-  --ifm-color-primary-lighter: #32d8b4;
-  --ifm-color-primary-lightest: #4fddbf;
-  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.3);
+  /* Dark mode brand colors */
+  --ifm-color-primary: #10b981;
+  --ifm-color-primary-dark: #0ea673;
+  --ifm-color-primary-darker: #0d9d6d;
+  --ifm-color-primary-darkest: #0b8159;
+  --ifm-color-primary-light: #20c18d;
+  --ifm-color-primary-lighter: #28c593;
+  --ifm-color-primary-lightest: #41d2a4;
+  
+  --ifm-background-color: #0b1120;
+  --ifm-navbar-background-color: #0f172a;
+  --ifm-footer-background-color: #0b0f19;
+  
+  --card-bg-custom: rgba(15, 23, 42, 0.65);
+  --card-border-custom: rgba(16, 185, 129, 0.15);
+  --docusaurus-highlighted-code-line-bg: rgba(16, 185, 129, 0.15);
+  
+  --hero-bg-gradient: linear-gradient(135deg, #022c22 0%, #050b14 100%);
+  --hero-text-color: #f8fafc;
+}
+
+/* Custom premium styles */
+
+/* Navbar enhancements */
+.navbar {
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.03);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+[data-theme='dark'] .navbar {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.2);
+}
+
+.navbar__brand {
+  font-weight: 800;
+  letter-spacing: -0.5px;
+  background: linear-gradient(135deg, var(--ifm-color-primary) 0%, #10b981 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Hero Section */
+.heroBannerCustom {
+  background: var(--hero-bg-gradient);
+  color: var(--hero-text-color);
+  padding: 6rem 0;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+}
+
+.heroBannerCustom::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: radial-gradient(circle at 70% 30%, rgba(16, 185, 129, 0.12) 0%, transparent 50%),
+              radial-gradient(circle at 20% 80%, rgba(251, 146, 60, 0.08) 0%, transparent 50%);
+  pointer-events: none;
+}
+
+.heroTitle {
+  font-size: 3.5rem;
+  font-weight: 800;
+  line-height: 1.15;
+  letter-spacing: -1.5px;
+  margin-bottom: 1.5rem;
+}
+
+.heroTitle span {
+  background: linear-gradient(135deg, #10b981 0%, #fb923c 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.heroSubtitle {
+  font-size: 1.35rem;
+  max-width: 800px;
+  margin: 0 auto 2.5rem auto;
+  opacity: 0.9;
+  line-height: 1.6;
+  font-weight: 400;
+}
+
+/* Action Buttons */
+.heroButtons {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.btnPremium {
+  padding: 0.8rem 2rem;
+  font-size: 1rem;
+  font-weight: 600;
+  border-radius: 50px;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  text-decoration: none !important;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.btnPrimaryCustom {
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  color: white !important;
+  box-shadow: 0 4px 15px rgba(16, 185, 129, 0.3);
+}
+
+.btnPrimaryCustom:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 25px rgba(16, 185, 129, 0.4);
+  opacity: 0.95;
+}
+
+.btnSecondaryCustom {
+  background: rgba(255, 255, 255, 0.08);
+  color: white !important;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(10px);
+}
+
+.btnSecondaryCustom:hover {
+  background: rgba(255, 255, 255, 0.15);
+  transform: translateY(-2px);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+/* Feature Cards Grid */
+.premiumFeaturesSection {
+  padding: 5rem 0;
+  background-color: var(--ifm-background-color);
+}
+
+.featureCard {
+  background: var(--card-bg-custom);
+  border: 1px solid var(--card-border-custom);
+  border-radius: 20px;
+  padding: 2.5rem;
+  height: 100%;
+  transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.02);
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+}
+
+[data-theme='dark'] .featureCard {
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.2);
+}
+
+.featureCard::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 4px;
+  background: linear-gradient(90deg, #10b981, #fb923c);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.featureCard:hover {
+  transform: translateY(-8px);
+  box-shadow: 0 12px 30px rgba(4, 120, 87, 0.1);
+  border-color: rgba(16, 185, 129, 0.25);
+}
+
+.featureCard:hover::before {
+  opacity: 1;
+}
+
+[data-theme='dark'] .featureCard:hover {
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.4), 0 0 15px rgba(16, 185, 129, 0.1);
+}
+
+.featureIconWrapper {
+  width: 60px;
+  height: 60px;
+  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 1.5rem;
+  background: rgba(16, 185, 129, 0.1);
+  color: #10b981;
+  transition: all 0.3s ease;
+}
+
+.featureCard:hover .featureIconWrapper {
+  transform: scale(1.1) rotate(5deg);
+  background: #10b981;
+  color: white;
+}
+
+.featureCardTitle {
+  font-size: 1.4rem;
+  font-weight: 700;
+  margin-bottom: 1rem;
+  color: var(--ifm-font-color-base);
+  letter-spacing: -0.5px;
+}
+
+.featureCardDesc {
+  font-size: 0.95rem;
+  line-height: 1.6;
+  opacity: 0.8;
+  margin: 0;
+  flex-grow: 1;
+}
+
+/* Sidebar Styling */
+.menu__link {
+  border-radius: 8px;
+  font-weight: 500;
+  margin: 2px 0;
+}
+
+.menu__link--active {
+  font-weight: 600;
+}
+
+/* Scrollbar Customization */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--ifm-background-color);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(16, 185, 129, 0.2);
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(16, 185, 129, 0.4);
 }

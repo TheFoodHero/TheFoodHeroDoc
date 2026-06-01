@@ -1,47 +1,74 @@
 ---
-sidebar_position: 2
+sidebar_position: 1
 ---
 
-# Tutorial Intro
+# TheFoodHero Tech Portalı'na Hoş Geldiniz!
 
-Let's discover **Docusaurus in less than 5 minutes**.
+**TheFoodHero Tech**, projemizin hem kullanıcı tarafındaki işlevsel detaylarını hem de arka plandaki gelişmiş teknik altyapısını bir araya getiren kapsamlı bir **bilgi ve dokümantasyon merkezidir**. 
 
-## Getting Started
+Bu portal, geliştiriciler, tasarımcılar, ürün yöneticileri ve tüm ekip üyeleri için tek bir doğru bilgi kaynağı (Single Source of Truth) olarak tasarlanmıştır.
 
-Get started by **creating a new site**.
+---
 
-Or **try Docusaurus immediately** with **[docusaurus.new](https://docusaurus.new)**.
+## 🚀 Portalin Amacı ve Kapsamı
 
-### What you'll need
+TheFoodHero ekosistemi, sıfır atık hedefleri ve sürdürülebilir bir gelecek için modern teknolojilerle inşa edilmiştir. Bu dokümantasyon portalında aşağıdaki iki ana alana ait bilgilere ulaşabilirsiniz:
 
-- [Node.js](https://nodejs.org/en/download/) version 20.0 or above:
-  - When installing Node.js, you are recommended to check all checkboxes related to dependencies.
+### 1. 📱 Uygulama ve Fonksiyonel Bilgiler (Application Info)
+* **Kullanıcı Rehberleri:** Mobil ve web uygulamalarının temel kullanım senaryoları.
+* **Fonksiyonel Ekranlar:** Chat, Ödeme, Harita ve Sipariş akışlarının iş kuralları.
+* **Konfigürasyon Yönetimi:** Uygulama ayarları, API uçları ve istemci parametreleri.
 
-## Generate a new site
+### 2. ⚙️ Yazılım ve Teknik Mimari (Software & Tech)
+* **Mikroservisler:** Bağımsız çalışan servislerin (Auth, Payment, Chat) mimari detayları ve API sözleşmeleri.
+* **Tasarım Desenleri:** Dağıtık mimarilerde veri tutarlılığını sağlayan **Saga Pattern** gibi ileri seviye yazılım modelleri.
+* **Sunucu ve Sistem:** Linux sunucu yapılandırmaları, bellek yönetimi ve performans optimizasyonu.
+* **CI/CD & Deployment:** Uygulamanın sunucuya çıkış ve test süreçleri.
 
-Generate a new Docusaurus site using the **classic template**.
+---
 
-The classic template will automatically be added to your project after you run the command:
+## 🗺️ Dokümantasyon Haritası
 
+Sitede kolayca gezinebilmeniz için içeriğimiz üç ana bölüme ayrılmıştır:
+
+1. 📂 **[Teknik Dokümantasyon](/docs/services/auth-service):** Chat Service, Payment Service ve Auth Service gibi servislerimizin derinlemesine teknik incelemeleri.
+2. 💡 **[Yazılım Prensipleri](/docs/learnings/software-patterns/saga-pattern):** Saga Pattern gibi sistem genelinde kullanılan tasarım şablonları ve mimari standartlar.
+3. 📘 **[Rehberler & Eğitimler](/docs/tutorials/tutorial-basics/congratulations):** Docusaurus entegrasyonu, yeni döküman ekleme kuralları ve geliştirme rehberleri.
+
+---
+
+## 🛠️ Hızlı Başlangıç (Geliştiriciler İçin)
+
+Projede yer alan servisleri yerel ortamınızda ayağa kaldırmak ve geliştirmeye başlamak için aşağıdaki adımları izleyebilirsiniz:
+
+### Gereksinimler
+* **Node.js** (v20.0 veya üzeri)
+* **Docker & Docker Compose** (Mikroservisler ve veri tabanları için)
+* **Git** (Kaynak kod yönetimi)
+
+### Depoyu Klonlama ve Çalıştırma
 ```bash
-npm init docusaurus@latest my-website classic
-```
+# Projeyi klonlayın
+git clone https://github.com/TheFoodHero/TheFoodHeroDoc.git
 
-You can type this command into Command Prompt, Powershell, Terminal, or any other integrated terminal of your code editor.
+# Bağımlılıkları yükleyin
+npm install
 
-The command also installs all necessary dependencies you need to run Docusaurus.
-
-## Start your site
-
-Run the development server:
-
-```bash
-cd my-website
+# Yerel geliştirme sunucusunu başlatın
 npm run start
 ```
+Geliştirme sunucusu varsayılan olarak **`http://localhost:3000`** adresinde çalışacaktır.
 
-The `cd` command changes the directory you're working with. In order to work with your newly created Docusaurus site, you'll need to navigate the terminal there.
+---
 
-The `npm run start` command builds your website locally and serves it through a development server, ready for you to view at http://localhost:3000/.
+## ✍️ Dokümantasyona Katkıda Bulunma
 
-Open `docs/intro.md` (this page) and edit some lines: the site **reloads automatically** and displays your changes.
+Yeni bir servis eklediğinizde veya mevcut bir iş kuralı güncellendiğinde lütfen buradaki belgeleri de güncelleyin.
+* Yeni bir teknik belge oluşturmak için `docs/services/` klasörü altına `.md` veya `.mdx` dosyası ekleyebilirsiniz.
+* Menü sıralaması ve sidebar ayarları için [sidebars.ts](file:///d:/Dev/TheFoodHeroDoc/sidebars.ts) dosyasını inceleyebilirsiniz.
+
+> [!TIP]
+> Değişikliklerinizi yaparken **Markdown** özelliklerinden (uyarı kutuları, kod blokları vb.) yararlanarak okumayı kolaylaştırabilirsiniz.
+
+> [!IMPORTANT]
+> Canlıya alınacak her yeni özellik veya teknik değişiklik öncesinde bu dokümantasyonun güncellenmesi zorunludur. Mimarinin güncelliği projenin sürdürülebilirliği için kritiktir.
