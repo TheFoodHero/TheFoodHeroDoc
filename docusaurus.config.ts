@@ -87,7 +87,12 @@ const config: Config = {
           position: 'left',
           label: 'Documentation',
         },
-        { to: '/blog', label: 'Blog', position: 'left' },
+        {
+          type: 'docSidebar',
+          sidebarId: 'learningSidebar',
+          position: 'left',
+          label: 'Learning',
+        },
         {
           type: 'docSidebar',
           sidebarId: 'tutorialSidebar',

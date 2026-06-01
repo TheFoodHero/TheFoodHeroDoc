@@ -53,7 +53,15 @@ const sidebars: SidebarsConfig = {
       ],
     },
   ],
-
+  learningSidebar: [
+    {
+      type: 'category',
+      label: 'Software Patterns',
+      items: [
+        'learnings/software-patterns/saga-pattern'
+      ],
+    }
+  ],
 };
 
 export default sidebars;

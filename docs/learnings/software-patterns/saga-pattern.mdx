@@ -1,0 +1,491 @@
+# Saga Pattern
+
+---
+
+## 1. Saga Pattern Nedir?
+
+Saga Pattern, mikroservis mimarilerinde birden fazla servis arasında gerçekleştirilen işlemlerin tutarlı bir şekilde yönetilmesini sağlayan bir tasarım desenidir.
+
+Monolitik uygulamalarda veritabanı transactionları kullanılarak tüm işlemler tek bir transaction içerisinde yürütülebilir.
+
+Örnek:
+
+```sql
+BEGIN TRANSACTION;
+
+UPDATE Account SET balance = balance - 100;
+UPDATE Account SET balance = balance + 100;
+
+COMMIT;
+```
+
+Mikroservis mimarisinde ise her servis kendi veritabanına sahip olduğu için bu yaklaşım mümkün değildir.
+
+Bu problemi çözmek için Saga Pattern kullanılır.
+
+---
+
+## 2. Neden İhtiyaç Duyulur?
+
+Mikroservislerde:
+
+* Her servis kendi veritabanına sahiptir.
+* Servisler birbirinden bağımsızdır.
+* Dağıtık transaction yönetimi zordur.
+* Performans ve ölçeklenebilirlik önemlidir.
+
+Örnek servisler:
+
+* Order Service
+* Payment Service
+* Inventory Service
+* Shipping Service
+
+Bir sipariş oluşturma işlemi tüm servisleri etkileyebilir.
+
+Bu servislerden biri başarısız olduğunda sistemin tutarlı kalması gerekir.
+
+---
+
+## 3. Distributed Transaction Problemi
+
+Bir sipariş oluşturma işlemini düşünelim.
+
+# Adım 1
+
+Order Service
+
+```text
+Sipariş oluşturuldu
+```
+
+# Adım 2
+
+Payment Service
+
+```text
+Ödeme alındı
+```
+
+# Adım 3
+
+Inventory Service
+
+```text
+Stok düşürüldü
+```
+
+Ancak stok servisi hata verirse:
+
+```text
+Sipariş oluşturuldu ✓
+Ödeme alındı ✓
+Stok düşürülemedi ✗
+```
+
+Bu durumda:
+
+* Sipariş geri alınmalı
+* Ödeme iade edilmeli
+
+Saga Pattern tam olarak bu sorunu çözmek için tasarlanmıştır.
+
+---
+
+## 4. Saga'nın Temel Mantığı
+
+Saga, işlemi küçük transactionlara böler.
+
+Örnek:
+
+```text
+Transaction 1
+↓
+Transaction 2
+↓
+Transaction 3
+```
+
+Her transaction başarılı olursa süreç devam eder.
+
+Bir transaction başarısız olursa:
+
+```text
+Compensation Transaction
+```
+
+çalıştırılır.
+
+Yani klasik rollback yerine iş mantıksal rollback uygulanır.
+
+---
+
+## 5. Choreography Saga
+
+Bu yaklaşımda merkezi bir yönetici yoktur.
+
+Servisler event yayınlar.
+
+Diğer servisler ilgili eventleri dinler.
+
+# Akış
+
+```text
+Order Service
+      |
+      | OrderCreated
+      v
+Payment Service
+      |
+      | PaymentCompleted
+      v
+Inventory Service
+      |
+      | StockReserved
+      v
+Shipping Service
+```
+
+# Örnek
+
+Order Service:
+
+```typescript
+publish("OrderCreated");
+```
+
+Payment Service:
+
+```typescript
+subscribe("OrderCreated");
+```
+
+Ödeme başarılı olunca:
+
+```typescript
+publish("PaymentCompleted");
+```
+
+Inventory Service:
+
+```typescript
+subscribe("PaymentCompleted");
+```
+
+---
+
+# Avantajlar
+
+* Merkezi yapı yoktur
+* Servisler bağımsızdır
+* Ölçeklenebilirliği yüksektir
+
+# Dezavantajlar
+
+* Event karmaşası oluşabilir
+* Hata takibi zorlaşabilir
+* Süreç görünürlüğü düşüktür
+
+---
+
+## 6. Orchestration Saga
+
+Bu modelde merkezi bir Saga Orchestrator bulunur.
+
+Tüm akışı orchestrator yönetir.
+
+# Akış
+
+```text
+Saga Orchestrator
+      |
+      +----> Order Service
+      |
+      +----> Payment Service
+      |
+      +----> Inventory Service
+      |
+      +----> Shipping Service
+```
+
+---
+
+# Örnek
+
+Orchestrator:
+
+```typescript
+await orderService.createOrder();
+
+await paymentService.processPayment();
+
+await inventoryService.reserveStock();
+
+await shippingService.createShipment();
+```
+
+---
+
+# Hata Durumu
+
+Inventory başarısız olursa:
+
+```typescript
+await paymentService.refundPayment();
+
+await orderService.cancelOrder();
+```
+
+---
+
+# Avantajlar
+
+* Akış merkezi yönetilir
+* Debug işlemleri kolaydır
+* Süreç görünürlüğü yüksektir
+
+# Dezavantajlar
+
+* Merkezi bağımlılık oluşur
+* Orchestrator kritik bileşen haline gelir
+
+---
+
+## 7. Compensation Transaction
+
+Saga Pattern'in en önemli kavramıdır.
+
+Normal transaction:
+
+```text
+ROLLBACK
+```
+
+Saga Pattern:
+
+```text
+COMPENSATION
+```
+
+---
+
+Örnek:
+
+| İşlem           | Compensation      |
+| --------------- | ----------------- |
+| Ödeme al        | Ödemeyi iade et   |
+| Sipariş oluştur | Siparişi iptal et |
+| Stok düş        | Stoğu geri artır  |
+| Kargo oluştur   | Kargoyu iptal et  |
+
+---
+
+## 8. Gerçek Hayat Senaryosu
+
+Bir e-ticaret uygulamasında:
+
+```text
+Sipariş Oluştur
+↓
+Ödeme Al
+↓
+Stok Düş
+↓
+Kargo Başlat
+```
+
+---
+
+Stok düşürme başarısız:
+
+```text
+Sipariş Oluştur ✓
+Ödeme Al ✓
+Stok Düş ✗
+```
+
+Compensation çalışır:
+
+```text
+Ödeme İade Et
+↓
+Siparişi İptal Et
+```
+
+Sonuç:
+
+```text
+Sistem tutarlı kalır.
+```
+
+---
+
+## 9. Saga Pattern Avantajları
+
+# Ölçeklenebilir
+
+Mikroservis mimarisine uygundur.
+
+# Bağımsız Veritabanları
+
+Her servis kendi DB'sini kullanabilir.
+
+# Performanslı
+
+2PC gibi bloklayıcı mekanizmalar yoktur.
+
+# Esnek
+
+İş akışları kolay genişletilebilir.
+
+---
+
+## 10. Saga Pattern Dezavantajları
+
+# Eventual Consistency
+
+Anlık tutarlılık yoktur.
+
+Sistem belirli bir süre tutarsız olabilir.
+
+---
+
+# Karmaşıklık
+
+Compensation işlemleri ayrıca geliştirilmelidir.
+
+---
+
+# Hata Yönetimi
+
+Özellikle Choreography yaklaşımında debug zorlaşabilir.
+
+---
+
+## 11. TheFoodHero Örneği
+
+Danışan paket satın alıyor.
+
+Servisler:
+
+```text
+Subscription Service
+Payment Service
+User Service
+Notification Service
+```
+
+---
+
+Akış:
+
+```text
+Paket Oluştur
+↓
+Ödeme Çek
+↓
+Üyelik Aktifleştir
+↓
+Bildirim Gönder
+```
+
+---
+
+Bildirim başarısız olursa:
+
+```text
+Retry
+```
+
+Ödeme başarısız olursa:
+
+```text
+Üyelik İptal
+Sipariş İptal
+```
+
+---
+
+Bu senaryo Saga Pattern için oldukça uygundur.
+
+---
+
+## 12. Best Practices
+
+# Her Adım Idempotent Olmalı
+
+Aynı event iki kez gelse bile sistem bozulmamalıdır.
+
+Örnek:
+
+```typescript
+if (paymentAlreadyProcessed)
+    return;
+```
+
+---
+
+# Retry Mekanizması Kullan
+
+Geçici hatalarda:
+
+```text
+Retry
+Retry
+Retry
+Dead Letter Queue
+```
+
+---
+
+# Event Versioning Kullan
+
+```typescript
+OrderCreatedV1
+OrderCreatedV2
+```
+
+---
+
+# CorrelationId Kullan
+
+Tüm eventler aynı işlem kimliğini taşımalıdır.
+
+```json
+{
+  "correlationId": "abc123"
+}
+```
+
+---
+
+# Event Loglama Yap
+
+Saga akışları merkezi olarak izlenmelidir.
+
+Örnek:
+
+* ELK
+* Grafana
+* OpenTelemetry
+* Jaeger
+
+---
+
+## Sonuç
+
+Saga Pattern, mikroservis mimarilerinde dağıtık transaction problemini çözmek için kullanılan en yaygın yöntemlerden biridir.
+
+Özellikle:
+
+* E-ticaret sistemleri
+* Ödeme sistemleri
+* Bankacılık uygulamaları
+* SaaS platformları
+* TheFoodHero gibi çok servisli yapılar
+
+için kritik öneme sahiptir.
+
+Temel prensip:
+
+"Her işlem ayrı bir transaction olarak çalışır ve hata durumunda compensation transaction ile geri alınır."
