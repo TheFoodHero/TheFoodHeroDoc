@@ -1,0 +1,745 @@
+# Event Driven Integration Test
+
+## Amaç
+
+Bu doküman, mikroservis mimarisinde çalışan servislerin yalnızca mock kullanılarak değil, gerçek veritabanı ve gerçek event akışı üzerinden nasıl test edilebileceğini açıklar.
+
+Örnek senaryo:
+
+```txt
+1. Auth/User servisinde gerçek test kullanıcısı oluşturulur.
+2. Kullanıcının hesabı aktif edilir.
+3. Account activation sonrası event yayınlanır.
+4. Chat service bu eventi dinler.
+5. Chat service kendi veritabanında user replica/projection oluşturur.
+6. Test, bu replica kaydının oluştuğunu doğrular.
+```
+
+Bu yaklaşım, klasik unit test kapsamından daha geniştir. Burada amaç, servisler arası entegrasyonun gerçekten çalışıp çalışmadığını doğrulamaktır.
+
+---
+
+## Bu Test Türü Nedir?
+
+Bu senaryo genellikle şu isimlerle geçer:
+
+```txt
+Event-Driven Integration Test
+Microservice Integration Test
+End-to-End Integration Test
+System Integration Test
+```
+
+En doğru ifade:
+
+> Bu test bir **Event-Driven Integration Test** senaryosudur.
+
+Eğer test, servisleri Docker Compose ile ayağa kaldırıp gerçek HTTP istekleri, gerçek DB ve gerçek event bus üzerinden çalışıyorsa, daha geniş anlamda **Microservice E2E Integration Test** olarak da adlandırılabilir.
+
+---
+
+## Unit Test ile Farkı
+
+Unit testte genellikle bağımlılıklar mocklanır.
+
+Örneğin:
+
+```txt
+Event publish metodu çağrıldı mı?
+Consumer handle metodu doğru parametreyle çalıştı mı?
+Repository.save çağrıldı mı?
+```
+
+Bu kontroller yararlıdır fakat sistemin gerçekten çalıştığını kanıtlamaz.
+
+Event-driven integration testte ise sistem gerçek bağımlılıklarla çalıştırılır:
+
+```txt
+Gerçek test veritabanı
+Gerçek Redis Stream / RabbitMQ / Kafka
+Gerçek consumer
+Gerçek repository
+Gerçek event payload
+Gerçek servis davranışı
+```
+
+Bu test şunu doğrular:
+
+> Kullanıcı aktif edildiğinde event gerçekten yayınlanıyor mu ve bu event Chat service tarafından consume edilip kendi veritabanında user replica oluşturuyor mu?
+
+---
+
+## Testin Kanıtladığı Davranışlar
+
+Bu tip bir test aşağıdaki davranışları doğrular:
+
+```txt
+1. Auth/User service veritabanına doğru kayıt atabiliyor mu?
+2. Account activation gerçek iş akışını tetikliyor mu?
+3. Event gerçekten event bus üzerine düşüyor mu?
+4. Chat service consumer eventi gerçekten alıyor mu?
+5. Chat service kendi veritabanında user replica/projection oluşturuyor mu?
+6. Servisler arası eventual consistency doğru çalışıyor mu?
+7. Event işlendiğinde sistem beklenen son duruma ulaşıyor mu?
+```
+
+---
+
+## Eventual Consistency Kavramı
+
+Event-driven mimarilerde veriler her serviste aynı anda güncellenmez.
+
+Örneğin kullanıcı Auth/User servisinde aktif edildiği anda Chat service veritabanında hemen görünmeyebilir. Çünkü Chat service’in eventi consume edip işlemesi için kısa bir süre gerekir.
+
+Bu yüzden testte doğrudan anlık assert yapmak yerine beklemeli assert kullanılmalıdır.
+
+Yanlış yaklaşım:
+
+```ts
+const replica = await chatUserRepository.findByUserId(userId);
+expect(replica).not.toBeNull();
+```
+
+Doğru yaklaşım:
+
+```ts
+await waitUntil(async () => {
+  const replica = await chatUserRepository.findByUserId(userId);
+  return replica !== null;
+});
+```
+
+Bu yaklaşım, event-driven sistemlerdeki doğal gecikmeyi dikkate alır.
+
+---
+
+## Önerilen Test Katmanları
+
+Mikroservis mimarisinde tüm testleri tek seviyede ele almak doğru değildir. Daha sağlıklı yaklaşım testleri katmanlara ayırmaktır.
+
+```txt
+1. Unit Test
+2. Repository Integration Test
+3. Consumer Integration Test
+4. Event-Driven Integration Test
+5. End-to-End Test
+```
+
+---
+
+## 1. Unit Test
+
+Unit test, tek bir fonksiyonun, use case’in, mapper’ın veya domain logic’in dış bağımlılıklardan izole şekilde test edilmesidir.
+
+Örnek doğrulamalar:
+
+```txt
+Şifre validasyonu doğru çalışıyor mu?
+UserActivated event payload doğru hazırlanıyor mu?
+Mapper doğru DTO üretiyor mu?
+UseCase hatalı inputta doğru hata fırlatıyor mu?
+```
+
+Unit testlerde DB, Redis, HTTP gibi bağımlılıklar genellikle mocklanır.
+
+---
+
+## 2. Repository Integration Test
+
+Repository integration test, repository katmanının gerçek test veritabanı ile çalışmasını doğrular.
+
+Örnek:
+
+```txt
+User repository kayıt oluşturabiliyor mu?
+Chat user replica repository findByUserId ile doğru kayıt dönebiliyor mu?
+Unique constraint doğru çalışıyor mu?
+Transaction rollback doğru çalışıyor mu?
+```
+
+Bu testlerde gerçek test DB kullanılır ancak event bus veya başka servisler dahil edilmeyebilir.
+
+---
+
+## 3. Consumer Integration Test
+
+Consumer integration test, bir event consumer’ın gerçek DB ile birlikte doğru çalışıp çalışmadığını doğrular.
+
+Bu testte event bus kullanılmayabilir. Consumer handler doğrudan çağrılır.
+
+Örnek:
+
+```ts
+it("should create user replica when UserActivated event is consumed", async () => {
+  const event = {
+    eventId: crypto.randomUUID(),
+    eventName: "user.activated",
+    occurredAt: new Date().toISOString(),
+    payload: {
+      userId: "user-test-1",
+      email: "test@thefoodhero.com",
+      name: "Test",
+      surname: "User"
+    }
+  };
+
+  await userActivatedConsumer.handle(event);
+
+  const replica = await chatUserRepository.findByUserId("user-test-1");
+
+  expect(replica).not.toBeNull();
+  expect(replica?.email).toBe("test@thefoodhero.com");
+});
+```
+
+Bu test şunu kanıtlar:
+
+> Chat service, `user.activated` eventini aldığında kendi veritabanında user replica oluşturabiliyor.
+
+Ancak bu test event bus’ın kendisini doğrulamaz.
+
+---
+
+## 4. Event-Driven Integration Test
+
+Bu test, publisher, event bus, consumer ve hedef DB akışını birlikte doğrular.
+
+Örnek akış:
+
+```txt
+1. Auth/User service üzerinden test kullanıcısı oluşturulur.
+2. Account activate edilir.
+3. UserActivated event yayınlanır.
+4. Event Redis Stream / RabbitMQ / Kafka üzerine düşer.
+5. Chat service consumer bu eventi consume eder.
+6. Chat service kendi DB’sinde user replica oluşturur.
+7. Test, Chat DB üzerinden sonucu doğrular.
+```
+
+Bu test, servisler arası event akışının gerçekten çalıştığını gösterir.
+
+---
+
+## 5. End-to-End Test
+
+E2E testte mümkün olduğunca gerçek sisteme yakın bir ortam kurulur.
+
+Örnek Docker Compose ortamı:
+
+```txt
+auth-service
+user-service
+chat-service
+postgres-auth-test
+postgres-chat-test
+redis-test
+gateway
+```
+
+Test gerçek HTTP istekleri atabilir:
+
+```txt
+POST /auth/register
+POST /auth/activate
+GET /chat/internal/users/:userId
+```
+
+veya doğrudan Chat service test veritabanını kontrol edebilir.
+
+---
+
+## Önerilen Test Dosya Yapısı
+
+```txt
+services/
+  auth-service/
+    tests/
+      unit/
+      integration/
+      e2e/
+
+  chat-service/
+    tests/
+      unit/
+      integration/
+      consumers/
+
+  test-utils/
+    waitUntil.ts
+    testDatabase.ts
+    redisTestClient.ts
+```
+
+Alternatif olarak monorepo içinde ortak test paketleri tutulabilir:
+
+```txt
+packages/
+  test-utils/
+    waitUntil.ts
+    prisma.ts
+    redis.ts
+    docker.ts
+```
+
+---
+
+## Örnek Test Dosya İsimleri
+
+```txt
+user-activated.consumer.spec.ts
+user-activated.integration.spec.ts
+user-activation-chat-replica.e2e.spec.ts
+account-activation.event-flow.spec.ts
+```
+
+Önerilen isim:
+
+```txt
+tests/integration/events/user-activated.integration.spec.ts
+```
+
+Daha geniş E2E senaryosu için:
+
+```txt
+tests/e2e/user-activation-chat-replica.e2e.spec.ts
+```
+
+---
+
+## Vitest ile Event-Driven Integration Test Örneği
+
+Aşağıdaki örnek, genel mantığı göstermek için hazırlanmıştır. Projedeki servis, repository ve Prisma yapılarına göre uyarlanmalıdır.
+
+```ts
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { randomUUID } from "crypto";
+import { waitUntil } from "../test-utils/waitUntil";
+import { authApp } from "../../src/app";
+import { chatPrisma } from "../test-utils/chatPrisma";
+
+describe("User activation event integration", () => {
+  beforeAll(async () => {
+    // Test DB temizliği
+    // Redis stream temizliği
+    // Consumer başlatma
+  });
+
+  afterAll(async () => {
+    // DB bağlantılarını kapat
+    // Redis bağlantısını kapat
+    // Consumer process/worker kapat
+  });
+
+  it("should create user replica in chat-service after account activation", async () => {
+    const email = `test-${randomUUID()}@thefoodhero.test`;
+
+    const registerResponse = await authApp.inject({
+      method: "POST",
+      url: "/auth/register",
+      body: {
+        email,
+        password: "Test123456!",
+        name: "Test",
+        surname: "User"
+      }
+    });
+
+    expect(registerResponse.statusCode).toBe(201);
+
+    const createdUser = registerResponse.json();
+
+    const activateResponse = await authApp.inject({
+      method: "POST",
+      url: "/auth/activate",
+      body: {
+        userId: createdUser.userId
+      }
+    });
+
+    expect(activateResponse.statusCode).toBe(200);
+
+    await waitUntil(async () => {
+      const replica = await chatPrisma.chatUserReplica.findUnique({
+        where: {
+          userId: createdUser.userId
+        }
+      });
+
+      return replica !== null;
+    }, {
+      timeoutMs: 10000,
+      intervalMs: 300
+    });
+
+    const replica = await chatPrisma.chatUserReplica.findUnique({
+      where: {
+        userId: createdUser.userId
+      }
+    });
+
+    expect(replica).not.toBeNull();
+    expect(replica?.email).toBe(email);
+    expect(replica?.name).toBe("Test");
+    expect(replica?.surname).toBe("User");
+    expect(replica?.isActive).toBe(true);
+  });
+});
+```
+
+---
+
+## waitUntil Yardımcı Fonksiyonu
+
+Event-driven sistemlerde consumer’ın eventi işlemesi zaman alabileceği için beklemeli kontrol yapılmalıdır.
+
+```ts
+export async function waitUntil(
+  condition: () => Promise<boolean>,
+  options?: {
+    timeoutMs?: number;
+    intervalMs?: number;
+  }
+) {
+  const timeoutMs = options?.timeoutMs ?? 10000;
+  const intervalMs = options?.intervalMs ?? 250;
+
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    if (await condition()) {
+      return;
+    }
+
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
+  }
+
+  throw new Error("Condition was not met within timeout");
+}
+```
+
+Bu yardımcı fonksiyon sayesinde test, belirli bir süre boyunca beklenen sonucun oluşmasını bekler.
+
+---
+
+## Test Ortamı İçin Docker Compose
+
+Gerçek development veya production veritabanı üzerinde test çalıştırılmamalıdır. Test için ayrı container ve ayrı veritabanları kullanılmalıdır.
+
+Örnek `docker-compose.test.yml`:
+
+```yml
+services:
+  postgres-auth-test:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: thefoodhero_auth_test
+    ports:
+      - "15432:5432"
+
+  postgres-chat-test:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: thefoodhero_chat_test
+    ports:
+      - "15433:5432"
+
+  redis-test:
+    image: redis:7
+    ports:
+      - "16379:6379"
+```
+
+Test çalıştırma:
+
+```bash
+docker compose -f docker-compose.test.yml up -d
+npm run test:integration
+docker compose -f docker-compose.test.yml down -v
+```
+
+`down -v` kullanımı, test verilerinin tamamen temizlenmesini sağlar.
+
+---
+
+## .env.test Örneği
+
+```env
+NODE_ENV=test
+
+AUTH_DATABASE_URL=postgresql://test:test@localhost:15432/thefoodhero_auth_test
+CHAT_DATABASE_URL=postgresql://test:test@localhost:15433/thefoodhero_chat_test
+
+REDIS_URL=redis://localhost:16379
+
+EVENT_STREAM_USER=user.events.test
+EVENT_STREAM_CHAT=chat.events.test
+```
+
+Test ortamında stream isimleri de ayrı tutulmalıdır.
+
+Örneğin:
+
+```txt
+user.events.test
+chat.events.test
+```
+
+Böylece local development eventleri ile test eventleri karışmaz.
+
+---
+
+## Package Script Örneği
+
+```json
+{
+  "scripts": {
+    "test": "vitest run",
+    "test:unit": "vitest run --config vitest.unit.config.ts",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:e2e": "vitest run --config vitest.e2e.config.ts"
+  }
+}
+```
+
+---
+
+## Event Testlerinde Dikkat Edilmesi Gerekenler
+
+### 1. Idempotency
+
+Event-driven sistemlerde aynı event birden fazla kez consume edilebilir. Consumer aynı event tekrar geldiğinde duplicate kayıt oluşturmamalıdır.
+
+Örnek test:
+
+```ts
+it("should be idempotent when the same event is consumed twice", async () => {
+  await consumer.handle(event);
+  await consumer.handle(event);
+
+  const replicas = await chatPrisma.chatUserReplica.findMany({
+    where: {
+      userId: event.payload.userId
+    }
+  });
+
+  expect(replicas).toHaveLength(1);
+});
+```
+
+Öneri:
+
+```txt
+userId alanı unique olmalı.
+eventId işlenmiş event tablosunda tutulabilir.
+Consumer upsert mantığıyla çalışabilir.
+```
+
+---
+
+### 2. ACK Sırası
+
+Event consume edildikten sonra doğru ACK sırası kritik öneme sahiptir.
+
+Doğru sıra:
+
+```txt
+1. Event consume edilir.
+2. DB write veya transaction tamamlanır.
+3. Event ACK edilir.
+```
+
+Yanlış sıra:
+
+```txt
+1. Event consume edilir.
+2. Event ACK edilir.
+3. DB write yapılır.
+```
+
+Yanlış sırada ACK atıldıktan sonra DB write başarısız olursa event kaybolmuş olur.
+
+---
+
+### 3. Consumer Restart Senaryosu
+
+Consumer event aldıktan sonra ACK atmadan kapanabilir. Bu durumda event pending durumda kalmalı ve consumer tekrar başladığında yeniden işlenebilmelidir.
+
+Test edilmesi gereken davranış:
+
+```txt
+Consumer ACK atmadan kapanır.
+Consumer tekrar başlatılır.
+Pending event tekrar işlenir.
+Chat DB’de replica oluşur.
+```
+
+---
+
+### 4. Invalid Payload
+
+Consumer hatalı payload geldiğinde sistemin tamamını bozacak şekilde crash olmamalıdır.
+
+Önerilen davranış:
+
+```txt
+Payload validate edilir.
+Geçersiz event dead-letter stream/queue içine alınır.
+Ana consumer döngüsü çalışmaya devam eder.
+```
+
+Örnek test:
+
+```ts
+it("should move invalid event to dead-letter stream", async () => {
+  // invalid payload publish edilir
+  // consumer işler
+  // event dead-letter stream içinde aranır
+});
+```
+
+---
+
+### 5. Out-of-Order Event
+
+Eventlerin sırası her zaman garanti olmayabilir.
+
+Örnek event sıraları:
+
+```txt
+user.created
+user.activated
+user.updated
+user.deactivated
+```
+
+Bazı durumlarda `user.updated` eventi `user.activated` eventinden önce gelebilir.
+
+MVP için kabul edilebilir strateji:
+
+```txt
+Chat service sadece user.activated eventini projection başlangıcı kabul eder.
+Replica yokken gelen user.updated eventleri ignore edilir veya dead-letter'a alınır.
+```
+
+Daha gelişmiş strateji:
+
+```txt
+Event versiyonu tutulur.
+Her user için son işlenen event version saklanır.
+Eski versiyonlu eventler işlenmez.
+```
+
+---
+
+## Event Schema Validation
+
+Event payload’ları mutlaka validate edilmelidir. Bunun için Zod gibi bir validasyon kütüphanesi kullanılabilir.
+
+Örnek:
+
+```ts
+import { z } from "zod";
+
+export const UserActivatedEventSchema = z.object({
+  eventId: z.string().uuid(),
+  eventName: z.literal("user.activated"),
+  occurredAt: z.string(),
+  payload: z.object({
+    userId: z.string(),
+    email: z.string().email(),
+    name: z.string(),
+    surname: z.string()
+  })
+});
+```
+
+Consumer içinde:
+
+```ts
+const parsed = UserActivatedEventSchema.parse(event);
+```
+
+Bu sayede eksik, hatalı veya beklenmeyen event payload’ları sistemin veri bütünlüğünü bozmaz.
+
+---
+
+## TheFoodHero İçin Minimum Test Seti
+
+TheFoodHero mikroservis mimarisi için başlangıçta aşağıdaki event testleri yeterli olacaktır:
+
+```txt
+1. user.activated eventi chat-service içinde user replica oluşturur.
+2. Aynı user.activated eventi iki kere gelirse duplicate kayıt oluşmaz.
+3. user.updated eventi gelirse chat replica güncellenir.
+4. user.deactivated eventi gelirse chat replica pasife çekilir.
+5. Invalid user event dead-letter stream’e alınır.
+6. Consumer restart olsa bile pending eventler tekrar işlenir.
+7. Event işlendiğinde Redis Stream ACK atılır.
+```
+
+Öncelikli başlangıç testi:
+
+```txt
+user.activated -> chat user replica created
+```
+
+Bu test, servisler arası event entegrasyonunun temel olarak çalıştığını kanıtlar.
+
+---
+
+## CI/CD İçinde Çalıştırma Stratejisi
+
+Tüm testlerin her committe çalışması gerekmeyebilir.
+
+Önerilen ayrım:
+
+```txt
+npm run test:unit
+  Her committe çalışır.
+
+npm run test:integration
+  Pull request aşamasında çalışır.
+
+npm run test:e2e
+  Merge veya deploy öncesi çalışır.
+```
+
+Event-driven integration testler DB, Redis ve servis bağımlılıkları kullandığı için unit testlere göre daha maliyetlidir. Bu yüzden test pipeline içinde doğru aşamada çalıştırılmalıdır.
+
+---
+
+## Önerilen Teknik Tanım
+
+Bu senaryo dokümantasyonda şu şekilde tanımlanabilir:
+
+> Bu senaryo mock tabanlı unit test değildir. Servisler arası event yayını, consumer işleme süreci ve hedef serviste projection/replica oluşturma davranışını doğrulayan event-driven integration test olarak ele alınmalıdır.
+
+Daha teknik ifade:
+
+> User activation akışı için event-driven integration test yazılacaktır. Test ortamında gerçek PostgreSQL ve Redis Stream kullanılacak; Auth/User service üzerinden test kullanıcısı oluşturulacak, account activation sonrası `user.activated` eventinin yayınlandığı ve Chat service tarafından consume edilerek `chat_user_replica` tablosuna işlendiği doğrulanacaktır.
+
+---
+
+## Özet
+
+Bu yaklaşımın temel fikri şudur:
+
+```txt
+Mock ile sadece kodun çağrılıp çağrılmadığı doğrulanır.
+Gerçek event-driven integration test ile sistemin gerçekten çalışıp çalışmadığı doğrulanır.
+```
+
+Bu nedenle user activation sonrası Chat service üzerinde user replica oluşturulmasını test etmek için en doğru yaklaşım:
+
+```txt
+Gerçek test DB
+Gerçek event bus
+Gerçek consumer
+Eventual consistency beklemeli assert
+```
+
+Bu test, TheFoodHero gibi mikroservis tabanlı bir yapıda servisler arası veri senkronizasyonunun güvenilirliğini artırır.

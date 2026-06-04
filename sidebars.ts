@@ -60,6 +60,13 @@ const sidebars: SidebarsConfig = {
       items: [
         'learnings/software-patterns/saga-pattern'
       ],
+    },
+    {
+      type: 'category',
+      label: 'Tests',
+      items: [
+        'learnings/tests/event-driven-int-test'
+      ],
     }
   ],
 };
