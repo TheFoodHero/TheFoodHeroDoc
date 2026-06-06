@@ -18,6 +18,7 @@ const sidebars: SidebarsConfig = {
       type: 'category',
       label: 'Services',
       items: [
+        'services/app-service',
         'services/auth-service',
         'services/payment-service',
         'services/chat-service',

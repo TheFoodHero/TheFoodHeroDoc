@@ -1,0 +1,2312 @@
+# App Service
+
+## 1. Amaç
+
+`app-service`, TheFoodHero ekosisteminde uygulama konfigürasyonlarını, uygulama menülerini, feature flag yönetimini, kullanıcı geri bildirimlerini, bilgi talep formlarını ve sistem entegrasyon tanımlarını yöneten merkezi destek servisidir.
+
+Bu servis doğrudan kullanıcı kimlik doğrulama, abonelik, randevu, chat, diyet planı veya ödeme işlemlerinin domain mantığını yönetmez. Bunun yerine diğer servislerin ve frontend uygulamalarının ihtiyaç duyduğu uygulama seviyesindeki yapılandırmaları merkezi olarak sağlar.
+
+`app-service` özellikle şu ihtiyaçları karşılar:
+
+* Web, mobil, admin panel, API, mikroservis ve worker uygulamalarının merkezi kaydı
+* Ortam bazlı uygulama ayarları yönetimi
+* Rol bazlı ve uygulama bazlı dinamik menü yönetimi
+* Feature flag ile özelliklerin kontrollü açılıp kapatılması
+* Kullanıcı feedback ve hata bildirimi kayıtlarının toplanması
+* Landing page veya tanıtım sayfası üzerinden bilgi talebi yönetimi
+* SMS, email, ödeme, harita, storage, AI ve webhook entegrasyonlarının merkezi tanımlanması
+* Servislerin aktif provider/entegrasyon bilgisini app-service üzerinden okuyabilmesi
+* Uygulama versiyon, base URL ve ortam bilgilerinin merkezi yönetimi
+* Event-driven mimariyle konfigürasyon değişikliklerinin diğer servislere yayılması
+
+---
+
+## 2. Servisin Sorumlulukları
+
+`app-service` aşağıdaki sorumluluklara sahip olmalıdır:
+
+* Uygulama kayıtlarını yönetmek
+* Uygulama ortam ayarlarını yönetmek
+* Uygulama versiyon bilgisini tutmak
+* Menü yapılarını tanımlamak
+* Menüleri role göre filtrelemek
+* Menülerin sıralamasını ve parent-child yapısını yönetmek
+* Feature flag tanımlarını yönetmek
+* Feature flag değerlerini environment bazlı sunmak
+* Kullanıcı feedback kayıtlarını almak
+* Feedback durumlarını yönetmek
+* Bilgi talebi formlarını kaydetmek
+* Entegrasyon sağlayıcılarını tanımlamak
+* Varsayılan entegrasyon sağlayıcısını seçmek
+* Entegrasyon sağlık/hata durumlarını takip etmek
+* Hassas entegrasyon bilgilerinin secret referanslarını yönetmek
+* Diğer servisler için internal config lookup endpointleri sağlamak
+* Konfigürasyon değişikliklerinde event publish etmek
+* Sık okunan config verileri için cache stratejisi sağlamak
+
+---
+
+## 3. Servisin TheFoodHero Mimarisindeki Konumu
+
+TheFoodHero mikroservis mimarisinde `app-service`, core business servislerinden ziyade platform configuration servisi olarak konumlanmalıdır.
+
+Genel mimari konum:
+
+```text
+Frontend / Mobile / Admin
+        |
+        v
+API Gateway / Nginx
+        |
+        v
+app-service
+        |
+        +--> PostgreSQL app-service database
+        +--> Redis cache
+        +--> Redis Streams event publish
+        +--> Secret Manager / encrypted data lookup
+```
+
+Diğer servislerle ilişki:
+
+```text
+auth-service          -> app-service: app settings / admin menu
+user-service          -> app-service: user feedback reference
+subscription-service  -> app-service: payment integration lookup
+notify-service        -> app-service: email / SMS integration lookup
+ai-service            -> app-service: AI provider config lookup
+geo-service           -> app-service: map provider config lookup
+store-service         -> app-service: payment / storage integration lookup
+web/mobile/admin      -> app-service: menu, feature flag, app settings, feedback
+```
+
+## 4. Diğer Servislerle Entegrasyon
+
+### 4.1 auth-service
+
+`auth-service`, kullanıcı kimlik doğrulama, access token, refresh token ve internal token üretiminden sorumludur.
+
+App-service auth-service’den kullanıcı doğrulaması yapmaz. Gelen request’lerde auth middleware tarafından doğrulanmış user context veya internal service context kullanılır.
+
+Kullanım örnekleri:
+
+* Admin panel menülerini role göre döndürmek
+* Login sonrası frontend’e gösterilecek menü ve feature flag bilgilerini sağlamak
+* Admin yetkisi gerektiren app settings veya integration yönetimini korumak
+* JWT içindeki `roleId`, `userId`, `tenantId` gibi değerlerle menü filtrelemek
+
+Örnek kullanım:
+
+```text
+frontend
+  -> auth-service login
+  -> access token alınır
+  -> app-service /menus/by-role çağrılır
+  -> roleIds içinde kullanıcının roleId değeri olan menüler döner
+```
+
+App-service, auth-service tablosuna foreign key vermemelidir. `userId`, `roleId` ve `tenantId` gibi değerler referans olarak kullanılmalıdır.
+
+---
+
+### 4.2 user-service
+
+`user-service`, kullanıcı profili, roller, tenant/clinic ilişkileri ve profil bilgilerini yönetir.
+
+App-service user-service’den sadece referans ID düzeyinde etkilenir.
+
+Kullanım örnekleri:
+
+* Feedback kaydında `userId` saklanır.
+* Menü filtrelemede `roleId` kullanılır.
+* Diyetisyen veya tenant özel entegrasyonlarda `ownerType = DIETITIAN` ve `ownerId = dietitianId` kullanılabilir.
+* Kullanıcı silindiğinde feedback kayıtları korunabilir; ancak kişisel veri politikası gerekiyorsa anonimleştirme yapılabilir.
+
+App-service kullanıcı detaylarını kopyalamamalıdır. Gerektiğinde user-service’den API ile okunmalıdır.
+
+---
+
+### 4.3 subscription-service
+
+`subscription-service`, plan, abonelik, entitlement ve kullanım limitlerinden sorumludur.
+
+App-service ile subscription-service arasındaki ilişki iki yönlü olabilir:
+
+1. Subscription-service ödeme entegrasyonları için app-service’den provider bilgisi alabilir.
+2. App-service bazı feature flag kontrollerinde subscription durumuna göre frontend davranışını etkileyebilir.
+
+Örnek kullanım:
+
+```text
+subscription-service
+  -> app-service: GetDefaultIntegration(type=PAYMENT, provider=IYZICO)
+  -> secretRef ile ödeme provider credential bilgisi alınır
+  -> checkout/payment işlemi yürütülür
+```
+
+App-service plan limiti hesaplamamalıdır. Plan, ödeme, fatura ve kullanım hakkı subscription-service içinde kalmalıdır.
+
+---
+
+### 4.4 notify-service
+
+`notify-service`, SMS, email, push ve ileride WhatsApp bildirimlerinden sorumludur.
+
+App-service, notify-service’e hangi provider’ın kullanılacağını söyler.
+
+Örnek kullanım:
+
+```text
+notify-service
+  -> app-service: GetDefaultIntegration(type=SMS, ownerType=SYSTEM)
+  -> NETGSM entegrasyonu bulunur
+  -> secretRef ile credential alınır
+  -> SMS gönderilir
+```
+
+Email için:
+
+```text
+notify-service
+  -> app-service: GetDefaultIntegration(type=EMAIL)
+  -> AWS_SES veya SENDGRID provider bilgisi alınır
+  -> email gönderilir
+```
+
+App-service mesaj göndermez. Sadece provider/config/secretRef bilgisini sağlar.
+
+---
+
+### 4.5 appointment-service
+
+`appointment-service`, randevu ve takvim domain’inden sorumludur.
+
+App-service bu servise şu noktalarda destek olur:
+
+* Calendar integration feature flag
+* Google Calendar entegrasyon bilgisi
+* Online randevu UI feature flag’i
+* Randevu modülü menü görünürlüğü
+* Environment bazlı frontend route/config bilgisi
+
+Örnek:
+
+```text
+appointment-service
+  -> app-service: GetFeatureFlag("enable_google_calendar_sync")
+  -> özellik açıksa Google Calendar senkronizasyonu çalıştırılır
+```
+
+---
+
+### 4.6 chat-service
+
+`chat-service`, mesajlaşma ve görüntülü görüşme domain’inden sorumludur.
+
+App-service chat-service için şu bilgileri sağlayabilir:
+
+* Yeni chat UI feature flag’i
+* Video call provider entegrasyonu
+* Chat menü görünürlüğü
+* Environment bazlı socket base URL bilgisi
+
+Örnek:
+
+```text
+web/mobile
+  -> app-service: GetAppSettings(thefoodhero-mobile, PRODUCTION)
+  -> chatSocketBaseUrl veya baseUrl bilgisi alınır
+```
+
+Eğer chat socket URL bilgileri app-service’de tutulacaksa `AppSettings` veya daha detaylı `config` alanı gerekebilir. Mevcut schema’da `AppSettings` içinde sadece `baseUrl` olduğu için detaylı endpoint/socket config için ileride `settings Json?` alanı eklenebilir.
+
+---
+
+### 4.7 ai-service
+
+`ai-service`, öneri, analiz, duygu analizi, menü önerisi ve rapor üretimi gibi AI işlemlerinden sorumludur.
+
+App-service ai-service için provider config kaynağı olabilir.
+
+Örnek kullanım:
+
+```text
+ai-service
+  -> app-service: GetDefaultIntegration(type=AI, provider=GEMINI veya CUSTOM)
+  -> model, baseUrl, timeout gibi config alınır
+  -> secretRef üzerinden API key okunur
+  -> AI request yapılır
+```
+
+App-service AI işlemi yapmamalıdır. AI model seçimi, token hesaplama ve cevap üretimi ai-service içinde kalmalıdır.
+
+---
+
+### 4.8 geo-service
+
+`geo-service`, konum bazlı diyetisyen eşleştirme ve harita/mesafe hesaplama işlerinden sorumludur.
+
+App-service geo-service için map provider bilgisi sağlayabilir.
+
+Örnek:
+
+```text
+geo-service
+  -> app-service: GetDefaultIntegration(type=MAP, provider=GOOGLE)
+  -> Google Maps config alınır
+  -> secretRef ile API key alınır
+```
+
+---
+
+### 4.9 store-service
+
+`store-service`, diyetisyenlerin ürün/dijital satış modülünden sorumludur.
+
+App-service store-service’e şu alanlarda destek olur:
+
+* Payment provider lookup
+* Storage provider lookup
+* Store modülü feature flag
+* Ürün satış modülü menü görünürlüğü
+* Webhook endpoint config bilgisi
+
+Örnek:
+
+```text
+store-service
+  -> app-service: GetDefaultIntegration(type=PAYMENT, ownerType=DIETITIAN, ownerId=dietitianId)
+  -> özel provider yoksa SYSTEM default provider alınır
+```
+
+---
+
+### 4.10 web / mobile / admin frontend
+
+Frontend uygulamaları app-service’i yoğun şekilde kullanır.
+
+Kullanım örnekleri:
+
+* Aktif menüleri getirme
+* Role göre menü filtreleme
+* App versiyon bilgisi alma
+* Maintenance veya force update bilgisi alma
+* Feature flag değerlerini okuma
+* Feedback gönderme
+* Environment bazlı base URL okuma
+* Admin panelden app settings, menus, feature flags ve integrations yönetme
+
+Frontend için sık kullanılan endpointler cache destekli olmalıdır.
+
+---
+
+## 5. Temel Kavramlar
+
+### 5.1 App
+
+`App`, TheFoodHero ekosistemindeki uygulama veya servis kaydını temsil eder.
+
+Örnekler:
+
+```text
+thefoodhero-web
+thefoodhero-mobile
+thefoodhero-admin
+auth-service
+user-service
+subscription-service
+notify-service
+ai-service
+chat-service
+```
+
+App kaydı, uygulama kimliğini ve versiyon bilgisini merkezi olarak tutar.
+
+---
+
+### 5.2 AppSettings
+
+`AppSettings`, bir app’in belirli environment için çalışma ayarlarını temsil eder.
+
+Örnek:
+
+```text
+thefoodhero-web + PRODUCTION -> https://thefoodhero.com
+thefoodhero-web + STAGING    -> https://test.thefoodhero.com
+auth-service + PRODUCTION    -> https://api.thefoodhero.com/auth
+```
+
+Mevcut schema’da `baseUrl`, `version`, `appType`, `environment`, `isActive` bilgileri bulunur.
+
+---
+
+### 5.3 AppMenu
+
+`AppMenu`, frontend veya admin panelde gösterilecek menüleri temsil eder.
+
+Örnek menüler:
+
+```text
+Dashboard
+Danışanlar
+Randevular
+Diyet Planları
+Chat
+Store
+Ayarlar
+Admin / Integrations
+Admin / Feature Flags
+```
+
+Menüler role göre filtrelenebilir ve parent-child yapıda düzenlenebilir.
+
+---
+
+### 5.4 FeatureFlag
+
+`FeatureFlag`, bir özelliğin uygulama ve ortam bazında aktif olup olmadığını veya hangi değerle çalışacağını belirler.
+
+Örnekler:
+
+```text
+enable_ai_recommendation = true
+enable_new_chat_ui = false
+max_feedback_screenshot_size_mb = 2
+mobile_force_update_version = 1.2.0
+```
+
+Feature flag sayesinde deployment yapılmadan bazı davranışlar runtime’da değiştirilebilir.
+
+---
+
+### 5.5 AppFeedback
+
+`AppFeedback`, kullanıcıdan gelen hata, öneri veya deneyim bildirimi kaydıdır.
+
+Feedback içinde:
+
+* Kullanıcı yorumu
+* Screenshot
+* Context bilgisi
+* Status
+* Oluşturulma zamanı
+
+bulunur.
+
+---
+
+### 5.6 AppInfoReq
+
+`AppInfoReq`, tanıtım veya bilgi alma formundan gelen talepleri temsil eder.
+
+Örnek:
+
+```text
+Bir diyetisyen TheFoodHero hakkında demo talep eder.
+Landing page üzerinden form doldurur.
+Talep app-service içine kaydedilir.
+Admin panelde takip edilir.
+```
+
+---
+
+### 5.7 Integration
+
+`Integration`, TheFoodHero’nun dış sistem sağlayıcı tanımlarını temsil eder.
+
+Örnekler:
+
+```text
+NETGSM SMS provider
+AWS SES email provider
+Iyzico payment provider
+Google Maps provider
+Google Calendar provider
+Custom AI provider
+```
+
+Bu model provider config, owner bilgisi, default provider seçimi ve secret referansını tutar.
+
+---
+
+## 6. Veritabanı Tasarımı
+
+App-service kendi veritabanına sahip olmalıdır. PostgreSQL kullanımı uygundur. Diğer servislerin tablolarına foreign key verilmemelidir.
+
+Ancak aynı app-service veritabanı içindeki modeller arasında relation kurulabilir.
+
+Önerilen yaklaşım:
+
+| İlişki | FK Verilmeli mi? | Açıklama |
+|---|---:|---|
+| `AppSettings.appId -> App.id` | Evet | Aynı servis boundary içinde. |
+| `FeatureFlag.appId -> App.id` | Evet | Aynı servis boundary içinde. |
+| `AppFeedback.userId -> user-service.User.id` | Hayır | Farklı servis boundary. |
+| `AppMenu.roleIds -> user/auth role id` | Hayır | Farklı servis boundary. |
+| `Integration.ownerId -> tenant/user/dietitian id` | Hayır | Polymorphic ve servisler arası referans. |
+
+Mevcut schema MVP için kullanılabilir. Ancak üretim kalitesinde relation, index ve secret yönetimi güçlendirilmelidir.
+
+---
+
+## 7. Mevcut Prisma Schema Analizi
+
+Mevcut schema aşağıdaki temel modelleri içerir:
+
+* `App`
+* `AppInfoReq`
+* `AppMenu`
+* `AppSettings`
+* `FeatureFlag`
+* `AppFeedback`
+* `Integration`
+
+Ayrıca şu enum yapıları bulunmaktadır:
+
+* `AppType`
+* `Environment`
+* `FeatureValueType`
+* `AppFeedbackStatus`
+* `IntegrationProvider`
+* `IntegrationType`
+* `IntegrationOwnerType`
+* `IntegrationStatus`
+
+Mevcut yapı, app-service’in MVP ihtiyaçlarını karşılayabilecek durumdadır. Özellikle `Integration` modeli, ileride sistem genelinde provider yönetimi için güçlü bir temel oluşturur.
+
+---
+
+## 8. Önerilen Tablolar ve Model Değerlendirmesi
+
+### 8.1 App
+
+`App`, sistemdeki uygulama veya servisleri tutar.
+
+| Alan | Tip | Açıklama |
+|---|---|---|
+| id | String | Primary key |
+| appName | String | Unique uygulama adı |
+| version | String | Genel versiyon bilgisi |
+| createdAt | DateTime | Oluşturulma tarihi |
+| updatedAt | DateTime | Güncellenme tarihi |
+
+Öneriler:
+
+* `appName` unique kalmalıdır.
+* `AppSettings` ve `FeatureFlag` ile relation kurulmalıdır.
+* İleride `description`, `ownerService`, `isSystemApp` alanları eklenebilir.
+
+Örnek app kayıtları:
+
+```text
+thefoodhero-web
+thefoodhero-mobile
+thefoodhero-admin
+auth-service
+notify-service
+subscription-service
+```
+
+---
+
+### 8.2 AppSettings
+
+`AppSettings`, uygulamanın environment bazlı ayarlarını tutar.
+
+| Alan | Tip | Açıklama |
+|---|---|---|
+| id | String | Primary key |
+| appId | String | App referansı |
+| name | String | Görünen ad |
+| appType | AppType | WEB, MOBILE, ADMIN, API, MICROSERVICE, WORKER |
+| environment | Environment | DEVELOPMENT, STAGING, PRODUCTION |
+| baseUrl | String? | Base URL |
+| version | String? | Ortam bazlı versiyon |
+| isActive | Boolean | Aktif mi |
+| createdAt | DateTime | Oluşturulma tarihi |
+| updatedAt | DateTime | Güncellenme tarihi |
+
+Mevcut unique constraint:
+
+```prisma
+@@unique([appId, environment])
+```
+
+Bu doğru bir tercihtir. Bir app’in aynı environment için tek settings kaydı olmalıdır.
+
+Önerilen ek alanlar:
+
+```prisma
+config Json?
+maintenanceMode Boolean @default(false)
+forceUpdateVersion String?
+minSupportedVersion String?
+```
+
+Bu alanlar özellikle mobile app ve frontend runtime davranışı için faydalı olur.
+
+Örnek `config`:
+
+```json
+{
+  "apiBaseUrl": "https://api.thefoodhero.com",
+  "chatSocketUrl": "https://api.thefoodhero.com/chat/socket.io",
+  "cdnBaseUrl": "https://cdn.thefoodhero.com"
+}
+```
+
+---
+
+### 8.3 AppMenu
+
+`AppMenu`, arayüzdeki dinamik menüleri tutar.
+
+| Alan | Tip | Açıklama |
+|---|---|---|
+| id | String | Primary key |
+| name | String | Sistem menü adı |
+| parentName | String? | Parent menü adı |
+| title | String | Görünen başlık |
+| icon | String | Icon adı |
+| url | String | Route/path |
+| roleIds | String[] | Erişebilen roller |
+| orderIndex | Int | Sıralama |
+| autoSelectFirstChild | Boolean | İlk child otomatik seçilsin mi |
+| isActive | Boolean | Aktif mi |
+| createdAt | DateTime | Oluşturulma tarihi |
+| updatedAt | DateTime | Güncellenme tarihi |
+
+Öneriler:
+
+* `name` unique olmalıdır.
+* `appId` eklenmelidir.
+* `parentName` yerine uzun vadede `parentId` daha güvenli olabilir.
+* `roleIds` için uygulama seviyesinde validation yapılmalıdır.
+* `permissionKeys` alanı eklenebilir.
+
+Önerilen ek alanlar:
+
+```prisma
+appId String?
+permissionKeys String[] @default([])
+isExternal Boolean @default(false)
+target String?
+```
+
+Bu sayede menü sadece role değil, permission bazlı da kontrol edilebilir.
+
+---
+
+### 8.4 FeatureFlag
+
+`FeatureFlag`, ortam bazlı özellik kontrolünü sağlar.
+
+| Alan | Tip | Açıklama |
+|---|---|---|
+| id | String | Primary key |
+| appId | String | App referansı |
+| environment | Environment | Ortam |
+| key | String | Flag anahtarı |
+| description | String? | Açıklama |
+| value | String | Değer |
+| valueType | FeatureValueType | BOOLEAN, STRING, NUMBER, JSON |
+| createdAt | DateTime | Oluşturulma tarihi |
+| updatedAt | DateTime | Güncellenme tarihi |
+
+Mevcut unique constraint:
+
+```prisma
+@@unique([appId, environment, key])
+```
+
+Doğru bir tercihtir.
+
+Öneriler:
+
+* `isActive` alanı eklenmelidir.
+* `rolloutPercentage` eklenebilir.
+* `targetRoleIds` veya `targetTenantIds` ileride eklenebilir.
+* JSON value için validation yapılmalıdır.
+
+Örnek feature flag değerleri:
+
+```text
+enable_ai_recommendation = true
+enable_new_chat_ui = true
+enable_store_module = false
+max_feedback_screenshot_size_mb = 2
+```
+
+---
+
+### 8.5 AppFeedback
+
+`AppFeedback`, kullanıcı feedback kayıtlarını tutar.
+
+| Alan | Tip | Açıklama |
+|---|---|---|
+| id | String | Primary key |
+| userId | String | Kullanıcı referansı |
+| comment | String | Kullanıcı yorumu |
+| screenshotBase64 | String | Ekran görüntüsü |
+| context | Json | Route/browser/app context |
+| status | AppFeedbackStatus | PENDING, IN_PROGRESS, RESOLVED, REJECTED |
+| createdAt | DateTime | Oluşturulma tarihi |
+| updatedAt | DateTime | Güncellenme tarihi |
+
+Öneriler:
+
+* `screenshotBase64` zorunlu olmamalıdır.
+* Base64 yerine `screenshotUrl` veya `attachmentRef` kullanılmalıdır.
+* Feedback tipi ve öncelik alanı eklenebilir.
+* Admin panelde assign edilebilir olması için `assignedTo` alanı eklenebilir.
+
+Önerilen ek enumlar:
+
+```prisma
+enum AppFeedbackType {
+  BUG
+  SUGGESTION
+  UX
+  PERFORMANCE
+  OTHER
+}
+
+enum AppFeedbackPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+```
+
+---
+
+### 8.6 AppInfoReq
+
+`AppInfoReq`, bilgi talep formlarını tutar.
+
+| Alan | Tip | Açıklama |
+|---|---|---|
+| id | String | Primary key |
+| email | String | Email |
+| name | String | Ad |
+| surname | String | Soyad |
+| message | String | Mesaj |
+| createdAt | DateTime | Oluşturulma tarihi |
+| updatedAt | DateTime | Güncellenme tarihi |
+
+Öneriler:
+
+* `phone` alanı eklenebilir.
+* `companyName` alanı eklenebilir.
+* `source` alanı eklenebilir.
+* `status` alanı eklenebilir.
+* Spam/rate limit uygulanmalıdır.
+
+Önerilen status:
+
+```prisma
+enum AppInfoReqStatus {
+  PENDING
+  CONTACTED
+  CONVERTED
+  REJECTED
+}
+```
+
+---
+
+### 8.7 Integration
+
+`Integration`, dış sistem sağlayıcı tanımlarını tutar.
+
+| Alan | Tip | Açıklama |
+|---|---|---|
+| id | String | Primary key |
+| provider | IntegrationProvider | Sağlayıcı |
+| type | IntegrationType | SMS, EMAIL, PAYMENT, STORAGE, MAP, AI, WEBHOOK |
+| name | String | Entegrasyon adı |
+| ownerType | IntegrationOwnerType | SYSTEM, MERCHANT, DIETITIAN, USER |
+| ownerId | String? | Sahip ID |
+| status | IntegrationStatus | ACTIVE, PASSIVE, ERROR, DISABLED |
+| isDefault | Boolean | Varsayılan mı |
+| config | Json? | Hassas olmayan config |
+| secretRef | String? | Secret manager referansı |
+| encryptedData | Json? | Şifrelenmiş credential |
+| lastSuccessAt | DateTime? | Son başarılı işlem |
+| lastErrorAt | DateTime? | Son hata zamanı |
+| lastErrorMsg | String? | Son hata mesajı |
+| createdAt | DateTime | Oluşturulma tarihi |
+| updatedAt | DateTime | Güncellenme tarihi |
+
+Bu model app-service’in en kritik modelidir.
+
+Önemli kurallar:
+
+* Secret bilgiler plaintext tutulmamalıdır.
+* `config` sadece hassas olmayan değerler için kullanılmalıdır.
+* API key, password, token, secret gibi değerler `secretRef` veya `encryptedData` üzerinden yönetilmelidir.
+* `isDefault` için aynı owner/type altında tek default garanti edilmelidir.
+* Hata mesajları sanitize edilmelidir.
+
+---
+
+## 9. Prisma Model Taslakları
+
+Mevcut schema korunarak önerilen geliştirilmiş taslak aşağıdaki gibi olabilir:
+
+```prisma
+model App {
+  id String @id @default(cuid())
+
+  appName String @unique
+  version String
+
+  settings     AppSettings[]
+  featureFlags FeatureFlag[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("App")
+}
+
+model AppSettings {
+  id String @id @default(cuid())
+
+  appId       String
+  name        String
+  appType     AppType
+  environment Environment
+
+  baseUrl String?
+  version String?
+  config  Json?
+
+  maintenanceMode    Boolean @default(false)
+  forceUpdateVersion String?
+  minSupportedVersion String?
+
+  isActive Boolean @default(true)
+
+  app App @relation(fields: [appId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([appId, environment])
+  @@index([environment])
+  @@index([appType])
+  @@index([isActive])
+  @@map("AppSettings")
+}
+
+model AppMenu {
+  id String @id @default(cuid())
+
+  appId      String?
+  name       String
+  parentName String?
+  title      String
+  icon       String
+  url        String
+
+  roleIds        String[] @default([])
+  permissionKeys String[] @default([])
+
+  orderIndex           Int     @default(-1)
+  autoSelectFirstChild Boolean @default(false)
+  isExternal           Boolean @default(false)
+  target               String?
+
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([name])
+  @@index([appId])
+  @@index([parentName])
+  @@index([isActive])
+  @@index([orderIndex])
+  @@map("AppMenu")
+}
+
+model FeatureFlag {
+  id String @id @default(cuid())
+
+  appId       String
+  environment Environment
+
+  key         String
+  description String?
+
+  value     String
+  valueType FeatureValueType
+
+  isActive         Boolean @default(true)
+  rolloutPercentage Int?
+
+  app App @relation(fields: [appId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([appId, environment, key])
+  @@index([appId])
+  @@index([environment])
+  @@index([key])
+  @@index([isActive])
+}
+
+model AppFeedback {
+  id     String @id @default(cuid())
+  userId String
+
+  type     AppFeedbackType?
+  priority AppFeedbackPriority?
+
+  comment          String
+  screenshotBase64 String?
+  screenshotUrl    String?
+  context          Json
+
+  status     AppFeedbackStatus @default(PENDING)
+  assignedTo String?
+  resolvedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("AppFeedback")
+}
+
+model AppInfoReq {
+  id String @id @default(cuid())
+
+  email   String
+  name    String
+  surname String
+  phone   String?
+  companyName String?
+  message String
+  source  String?
+  status  AppInfoReqStatus @default(PENDING)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([email])
+  @@index([createdAt])
+  @@map("AppInfoReq")
+}
+
+model Integration {
+  id String @id @default(cuid())
+
+  provider IntegrationProvider
+  type     IntegrationType
+  name     String
+
+  ownerType IntegrationOwnerType @default(SYSTEM)
+  ownerId   String?
+
+  status    IntegrationStatus @default(ACTIVE)
+  isDefault Boolean           @default(false)
+
+  config        Json?
+  secretRef     String?
+  encryptedData Json?
+
+  lastSuccessAt DateTime?
+  lastErrorAt   DateTime?
+  lastErrorMsg  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([provider])
+  @@index([type])
+  @@index([status])
+  @@index([ownerType, ownerId])
+  @@index([type, provider, status])
+  @@index([type, ownerType, ownerId, isDefault])
+  @@map("Integration")
+}
+```
+
+Ek enum önerileri:
+
+```prisma
+enum AppFeedbackType {
+  BUG
+  SUGGESTION
+  UX
+  PERFORMANCE
+  OTHER
+}
+
+enum AppFeedbackPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum AppInfoReqStatus {
+  PENDING
+  CONTACTED
+  CONVERTED
+  REJECTED
+}
+```
+
+---
+
+## 10. Kritik İş Akışları
+
+## 10.1 Uygulama Ayarı Okuma Akışı
+
+```text
+1. Frontend veya servis appName + environment bilgisiyle app-service'e istek atar.
+2. App tablosundan appName ile uygulama bulunur.
+3. AppSettings tablosundan appId + environment ile ayar kaydı alınır.
+4. isActive false ise hata veya fallback response döner.
+5. baseUrl, version, config, maintenance bilgileri response olarak döner.
+6. Sonuç Redis cache'e yazılır.
+```
+
+Örnek endpoint:
+
+```text
+GET /app-settings/by-app/thefoodhero-web/PRODUCTION
+```
+
+Örnek response:
+
+```json
+{
+  "appName": "thefoodhero-web",
+  "environment": "PRODUCTION",
+  "appType": "WEB",
+  "baseUrl": "https://thefoodhero.com",
+  "version": "1.0.0",
+  "maintenanceMode": false,
+  "config": {
+    "apiBaseUrl": "https://api.thefoodhero.com",
+    "chatSocketUrl": "https://api.thefoodhero.com/chat/socket.io"
+  }
+}
+```
+
+---
+
+## 10.2 Rol Bazlı Menü Okuma Akışı
+
+```text
+1. Kullanıcı frontend'e giriş yapar.
+2. auth-service access token üretir.
+3. Frontend token içinden veya user endpointinden roleId bilgisini alır.
+4. Frontend app-service /menus/by-role endpointini çağırır.
+5. App-service isActive true olan ve roleIds içinde ilgili roleId bulunan menüleri getirir.
+6. parentName ve orderIndex bilgilerine göre menü ağacı oluşturulur.
+7. Menü listesi frontend'e döner.
+```
+
+Örnek endpoint:
+
+```text
+GET /menus/by-role/:roleId?appId=thefoodhero-web
+```
+
+Örnek Prisma filtre:
+
+```ts
+where: {
+  isActive: true,
+  roleIds: {
+    has: roleId
+  }
+}
+```
+
+---
+
+## 10.3 Feature Flag Kontrol Akışı
+
+```text
+1. Client veya servis feature key için app-service'e istek atar.
+2. appId + environment + key ile FeatureFlag bulunur.
+3. isActive false ise default davranış uygulanır.
+4. valueType değerine göre value parse edilir.
+5. Parse edilmiş değer response olarak döner.
+```
+
+Örnek endpoint:
+
+```text
+GET /feature-flags/:key?appId=xxx&environment=PRODUCTION
+```
+
+Örnek response:
+
+```json
+{
+  "key": "enable_new_chat_ui",
+  "value": true,
+  "valueType": "BOOLEAN"
+}
+```
+
+---
+
+## 10.4 Feedback Oluşturma Akışı
+
+```text
+1. Kullanıcı uygulama içinden feedback formunu açar.
+2. Yorum, screenshot ve context bilgisi gönderir.
+3. app-service request'i validate eder.
+4. Screenshot boyutu kontrol edilir.
+5. Feedback PENDING status ile kaydedilir.
+6. app.feedback.created eventi yayınlanır.
+7. Admin panelde feedback listelenir.
+```
+
+Örnek endpoint:
+
+```text
+POST /feedback
+```
+
+Örnek request:
+
+```json
+{
+  "comment": "Randevu takviminde tarih seçerken hata alıyorum.",
+  "screenshotBase64": "...",
+  "context": {
+    "route": "/appointments",
+    "browser": "Chrome",
+    "appVersion": "1.0.0",
+    "environment": "PRODUCTION"
+  }
+}
+```
+
+---
+
+## 10.5 Feedback Durum Güncelleme Akışı
+
+```text
+1. Admin kullanıcı feedback detayını açar.
+2. Status PENDING -> IN_PROGRESS yapılır.
+3. Çözüm sonrası RESOLVED yapılır.
+4. resolvedAt alanı güncellenir.
+5. app.feedback.updated eventi yayınlanır.
+```
+
+Önerilen status akışı:
+
+```text
+PENDING -> IN_PROGRESS -> RESOLVED
+PENDING -> REJECTED
+IN_PROGRESS -> REJECTED
+```
+
+---
+
+## 10.6 Bilgi Talep Formu Akışı
+
+```text
+1. Landing page üzerinde kullanıcı bilgi talep formunu doldurur.
+2. app-service /info-requests endpointine request atılır.
+3. Email, ad, soyad ve mesaj validate edilir.
+4. AppInfoReq kaydı oluşturulur.
+5. app.infoRequest.created eventi yayınlanır.
+6. notify-service opsiyonel olarak admin'e email bildirimi gönderir.
+7. Admin panelden talep CONTACTED veya CONVERTED yapılır.
+```
+
+Örnek endpoint:
+
+```text
+POST /info-requests
+```
+
+---
+
+## 10.7 Default Integration Lookup Akışı
+
+```text
+1. Bir servis belirli integration type için provider bilgisine ihtiyaç duyar.
+2. Önce owner özelinde ACTIVE + isDefault integration aranır.
+3. Owner özelinde kayıt yoksa SYSTEM default aranır.
+4. Integration bulunursa config ve secretRef döner.
+5. Hassas data response içinde plaintext dönmez.
+6. İlgili servis secretRef ile secret manager'dan credential okur.
+```
+
+Örnek:
+
+```text
+notify-service
+  -> GET /internal/integrations/default?type=SMS&ownerType=SYSTEM
+```
+
+Fallback stratejisi:
+
+```text
+1. ownerType + ownerId + type + isDefault + ACTIVE
+2. SYSTEM + type + isDefault + ACTIVE
+3. Uygun kayıt yoksa hata
+```
+
+Örnek response:
+
+```json
+{
+  "provider": "NETGSM",
+  "type": "SMS",
+  "name": "Default NetGSM SMS Provider",
+  "config": {
+    "header": "TFHERO"
+  },
+  "secretRef": "thefoodhero/prod/netgsm"
+}
+```
+
+---
+
+## 10.8 Integration Test Connection Akışı
+
+```text
+1. Admin panelden entegrasyon test edilir.
+2. app-service ilgili provider için test strategy seçer.
+3. SecretRef veya encryptedData ile credential resolve edilir.
+4. Provider'a test request yapılır.
+5. Başarılıysa lastSuccessAt güncellenir.
+6. Başarısızsa status ERROR, lastErrorAt ve lastErrorMsg güncellenir.
+7. app.integration.tested eventi yayınlanır.
+```
+
+Not:
+
+App-service test connection yapabilir; ancak asıl SMS/email/payment operasyonlarını ilgili servisler yapmalıdır.
+
+---
+
+## 11. API Tasarımı
+
+### 11.1 Public API
+
+Frontend veya dış kullanıma açık sınırlı endpointler.
+
+```text
+GET    /app-settings/public
+GET    /menus/active
+GET    /menus/by-role/:roleId
+GET    /feature-flags/public
+GET    /feature-flags/:key
+POST   /feedback
+POST   /info-requests
+```
+
+Public endpointlerde hassas data dönülmemelidir.
+
+---
+
+### 11.2 Internal API
+
+Servisler arası kullanılacak endpointler.
+
+```text
+GET    /internal/app-settings/:appName/:environment
+GET    /internal/feature-flags/:appName/:environment/:key
+GET    /internal/feature-flags/:appName/:environment
+GET    /internal/integrations/default
+GET    /internal/integrations/by-type/:type
+POST   /internal/integrations/:id/mark-success
+POST   /internal/integrations/:id/mark-error
+```
+
+Bu endpointler internal token ile korunmalıdır.
+
+---
+
+### 11.3 Admin API
+
+Admin panel üzerinden yönetilecek endpointler.
+
+```text
+GET    /admin/apps
+POST   /admin/apps
+PATCH  /admin/apps/:id
+DELETE /admin/apps/:id
+
+GET    /admin/app-settings
+POST   /admin/app-settings
+PATCH  /admin/app-settings/:id
+DELETE /admin/app-settings/:id
+
+GET    /admin/menus
+POST   /admin/menus
+PATCH  /admin/menus/:id
+DELETE /admin/menus/:id
+POST   /admin/menus/reorder
+
+GET    /admin/feature-flags
+POST   /admin/feature-flags
+PATCH  /admin/feature-flags/:id
+DELETE /admin/feature-flags/:id
+
+GET    /admin/feedback
+GET    /admin/feedback/:id
+PATCH  /admin/feedback/:id/status
+
+GET    /admin/info-requests
+PATCH  /admin/info-requests/:id/status
+
+GET    /admin/integrations
+POST   /admin/integrations
+PATCH  /admin/integrations/:id
+DELETE /admin/integrations/:id
+POST   /admin/integrations/:id/test
+POST   /admin/integrations/:id/set-default
+```
+
+---
+
+## 12. Event Tasarımı
+
+App-service değişiklikleri Redis Streams üzerinden publish edebilir.
+
+Önerilen stream isimleri:
+
+```text
+app.events
+app.settings.events
+app.menu.events
+app.featureFlag.events
+app.integration.events
+app.feedback.events
+```
+
+Önerilen event tipleri:
+
+```text
+app.created
+app.updated
+app.settings.created
+app.settings.updated
+app.menu.created
+app.menu.updated
+app.menu.deleted
+app.featureFlag.created
+app.featureFlag.updated
+app.featureFlag.disabled
+app.integration.created
+app.integration.updated
+app.integration.status_changed
+app.integration.error
+app.feedback.created
+app.feedback.status_changed
+app.infoRequest.created
+```
+
+Örnek event payload:
+
+```json
+{
+  "eventId": "uuid",
+  "eventType": "app.featureFlag.updated",
+  "occurredAt": "2026-06-06T12:00:00.000Z",
+  "appId": "app-id",
+  "appName": "thefoodhero-web",
+  "environment": "PRODUCTION",
+  "key": "enable_new_chat_ui",
+  "value": "true",
+  "valueType": "BOOLEAN"
+}
+```
+
+Integration update event:
+
+```json
+{
+  "eventId": "uuid",
+  "eventType": "app.integration.updated",
+  "occurredAt": "2026-06-06T12:00:00.000Z",
+  "integrationId": "integration-id",
+  "type": "SMS",
+  "provider": "NETGSM",
+  "ownerType": "SYSTEM",
+  "ownerId": null,
+  "status": "ACTIVE",
+  "isDefault": true
+}
+```
+
+---
+
+## 13. Cache Stratejisi
+
+App-service verileri genellikle sık okunan ve az değişen verilerdir. Bu nedenle Redis cache kullanımı önemlidir.
+
+Cache’e uygun veriler:
+
+* App settings
+* Feature flag listesi
+* Tekil feature flag değeri
+* Role göre menüler
+* Default integration lookup sonucu
+
+Önerilen Redis key yapısı:
+
+```text
+app:settings:{appName}:{environment}
+app:feature-flags:{appName}:{environment}
+app:feature-flag:{appName}:{environment}:{key}
+app:menus:{appId}:{roleId}
+app:integration:default:{type}:{ownerType}:{ownerId}
+```
+
+TTL önerisi:
+
+```text
+app settings: 15-60 dakika
+feature flags: 5-15 dakika
+menus: 15-60 dakika
+integration lookup: 5-15 dakika
+```
+
+Cache invalidation kuralları:
+
+* AppSettings güncellenince `app:settings:*` ilgili key temizlenir.
+* FeatureFlag güncellenince ilgili app/environment flag keyleri temizlenir.
+* AppMenu güncellenince ilgili app/role menü cache’i temizlenir.
+* Integration güncellenince ilgili default integration cache’i temizlenir.
+* Event publish sonrası consumer servisler kendi local cache’lerini temizleyebilir.
+
+---
+
+## 14. Transaction ve Idempotency
+
+Aşağıdaki işlemler transaction içinde yapılmalıdır:
+
+* App + AppSettings birlikte oluşturma
+* Menü sıralama güncelleme
+* Integration default değiştirme
+* Integration status güncelleme
+* Feedback status güncelleme
+* Feature flag bulk update
+* App settings update + cache invalidation event kaydı
+
+Integration default değiştirme transaction içinde yapılmalıdır.
+
+Örnek akış:
+
+```text
+1. Aynı type + ownerType + ownerId için mevcut default kayıtları false yapılır.
+2. Seçilen integration isDefault true yapılır.
+3. Event kaydı oluşturulur.
+4. Cache invalidation yapılır.
+```
+
+Webhook tarzı external callback app-service’de sınırlı olacaktır. Ancak ileride integration provider callback kayıtları tutulacaksa idempotency için request ID veya provider event ID saklanmalıdır.
+
+---
+
+## 15. Güvenlik Tasarımı
+
+App-service güvenlik açısından kritik bir servistir. Özellikle `Integration` modeli nedeniyle provider secret, API key ve credential yönetimi dolaylı olarak bu servise bağlıdır.
+
+### 15.1 Endpoint Yetkilendirme
+
+Endpointler üç seviyeye ayrılmalıdır:
+
+```text
+Public
+Internal
+Admin
+```
+
+Public endpointler:
+
+* Feature flag okuma
+* Aktif menü okuma
+* Feedback oluşturma
+* Info request oluşturma
+
+Internal endpointler:
+
+* Default integration lookup
+* Internal app settings lookup
+* Internal feature flag lookup
+* Integration success/error güncelleme
+
+Admin endpointler:
+
+* App settings yönetimi
+* Menü yönetimi
+* Feature flag yönetimi
+* Integration yönetimi
+* Feedback durum yönetimi
+* Info request durum yönetimi
+
+### 15.2 Secret Yönetimi
+
+Kurallar:
+
+* Secret değerleri `config` içinde tutulmamalıdır.
+* API key, token, private key ve password response içinde dönülmemelidir.
+* `secretRef` admin dışı endpointlerde maskelenmelidir.
+* `encryptedData` varsa AES-GCM gibi authenticated encryption kullanılmalıdır.
+* Encryption key kod içinde veya repo içinde tutulmamalıdır.
+* `lastErrorMsg` sanitize edilmelidir.
+* Provider raw response loglanırken credential alanları maskelenmelidir.
+
+### 15.3 Rate Limit
+
+Rate limit önerilen endpointler:
+
+```text
+POST /feedback
+POST /info-requests
+GET  /feature-flags/public
+POST /admin/integrations/:id/test
+```
+
+### 15.4 Audit Log
+
+Admin tarafından yapılan kritik değişiklikler audit edilmelidir.
+
+Audit edilmesi gereken işlemler:
+
+* Integration oluşturma/güncelleme/silme
+* Integration default değiştirme
+* Feature flag güncelleme
+* App settings güncelleme
+* Menü güncelleme
+* Feedback status değiştirme
+
+İleride ayrı bir `audit-service` kurulana kadar app-service içinde `AppAuditLog` tablosu düşünülebilir.
+
+---
+
+## 16. Validasyon Kuralları
+
+### 16.1 App
+
+* `appName` boş olmamalıdır.
+* `appName` unique olmalıdır.
+* `version` boş olmamalıdır.
+* Versiyon formatı semver standardına yakın olmalıdır.
+
+Örnek:
+
+```text
+1.0.0
+1.1.0-beta.1
+```
+
+---
+
+### 16.2 AppSettings
+
+* `appId` geçerli bir App kaydı olmalıdır.
+* Aynı `appId + environment` tekrar oluşturulmamalıdır.
+* `baseUrl` geçerli URL formatında olmalıdır.
+* `config` valid JSON olmalıdır.
+* `forceUpdateVersion` varsa semver formatında olmalıdır.
+* `minSupportedVersion` varsa semver formatında olmalıdır.
+
+---
+
+### 16.3 AppMenu
+
+* `name` boş olmamalıdır.
+* `name` unique olmalıdır.
+* `title` boş olmamalıdır.
+* `url` geçerli route veya URL formatında olmalıdır.
+* `roleIds` array olmalıdır.
+* `orderIndex` integer olmalıdır.
+* `parentName` varsa mevcut bir menüye karşılık gelmelidir.
+* `icon` frontend icon setiyle uyumlu olmalıdır.
+
+---
+
+### 16.4 FeatureFlag
+
+* `key` boş olmamalıdır.
+* `key` standardize edilmelidir.
+* `valueType = BOOLEAN` ise value sadece `true` veya `false` olmalıdır.
+* `valueType = NUMBER` ise value sayıya çevrilebilmelidir.
+* `valueType = JSON` ise value valid JSON olmalıdır.
+* Aynı `appId + environment + key` tekrar oluşturulmamalıdır.
+* `rolloutPercentage` varsa 0-100 arasında olmalıdır.
+
+Önerilen key standardı:
+
+```text
+snake_case
+```
+
+Örnek:
+
+```text
+enable_ai_recommendation
+enable_new_chat_ui
+max_feedback_screenshot_size_mb
+```
+
+---
+
+### 16.5 AppFeedback
+
+* `comment` boş olmamalıdır.
+* `comment` maksimum karakter sınırına sahip olmalıdır.
+* `screenshotBase64` opsiyonel olmalıdır.
+* Screenshot boyutu sınırlandırılmalıdır.
+* `context` valid JSON olmalıdır.
+* Kullanıcı başına rate limit uygulanmalıdır.
+
+---
+
+### 16.6 AppInfoReq
+
+* `email` geçerli email formatında olmalıdır.
+* `name` ve `surname` minimum 2 karakter olmalıdır.
+* `message` maksimum karakter sınırına sahip olmalıdır.
+* Spam koruması uygulanmalıdır.
+* Aynı email’den kısa sürede çok sayıda kayıt engellenmelidir.
+
+---
+
+### 16.7 Integration
+
+* `provider` zorunlu olmalıdır.
+* `type` zorunlu olmalıdır.
+* `name` boş olmamalıdır.
+* `ownerType = SYSTEM` ise `ownerId` boş olabilir.
+* `ownerType != SYSTEM` ise `ownerId` dolu olmalıdır.
+* `isDefault = true` yapılırken aynı owner/type altında başka default olmamalıdır.
+* `config` içinde secret alanlar olmamalıdır.
+* `secretRef` varsa formatı doğrulanmalıdır.
+* `status = ACTIVE` yapılmadan önce test connection opsiyonel olarak çalıştırılmalıdır.
+
+---
+
+## 17. MVP İçin Önerilen Kapsam
+
+MVP aşamasında app-service fazla karmaşıklaştırılmadan aşağıdaki kapsamla geliştirilmelidir.
+
+### MVP’de olmalı
+
+* App tablosu
+* AppSettings tablosu
+* AppMenu tablosu
+* FeatureFlag tablosu
+* AppFeedback tablosu
+* AppInfoReq tablosu
+* Integration tablosu
+* Public app settings endpointi
+* Role bazlı menü endpointi
+* Feature flag okuma endpointi
+* Feedback oluşturma endpointi
+* Info request oluşturma endpointi
+* Admin menu yönetimi
+* Admin feature flag yönetimi
+* Admin integration yönetimi
+* Internal default integration lookup endpointi
+* Redis cache
+* Redis Stream event publish
+
+### MVP sonrası eklenebilir
+
+* AppAuditLog
+* AppConfigHistory
+* Feature flag rollout percentage
+* Tenant/user hedefli feature flag
+* Storage tabanlı feedback screenshot yönetimi
+* Secret manager doğrudan entegrasyonu
+* Integration health check scheduler
+* Integration usage metrics
+* Config versioning
+* Admin panelde config diff/history
+* Remote config SDK yapısı
+* Permission bazlı menü yönetimi
+
+---
+
+## 18. Önerilen Seed Data
+
+### 18.1 App Seed
+
+```ts
+const apps = [
+  {
+    appName: "thefoodhero-web",
+    version: "1.0.0",
+  },
+  {
+    appName: "thefoodhero-mobile",
+    version: "1.0.0",
+  },
+  {
+    appName: "thefoodhero-admin",
+    version: "1.0.0",
+  },
+  {
+    appName: "auth-service",
+    version: "1.0.0",
+  },
+  {
+    appName: "user-service",
+    version: "1.0.0",
+  },
+  {
+    appName: "subscription-service",
+    version: "1.0.0",
+  },
+  {
+    appName: "notify-service",
+    version: "1.0.0",
+  }
+];
+```
+
+---
+
+### 18.2 AppSettings Seed
+
+```ts
+const appSettings = [
+  {
+    appName: "thefoodhero-web",
+    name: "TheFoodHero Web",
+    appType: "WEB",
+    environment: "PRODUCTION",
+    baseUrl: "https://thefoodhero.com",
+    version: "1.0.0",
+    isActive: true
+  },
+  {
+    appName: "thefoodhero-admin",
+    name: "TheFoodHero Admin",
+    appType: "ADMIN",
+    environment: "PRODUCTION",
+    baseUrl: "https://admin.thefoodhero.com",
+    version: "1.0.0",
+    isActive: true
+  }
+];
+```
+
+---
+
+### 18.3 Menu Seed
+
+```ts
+const menus = [
+  {
+    name: "dashboard",
+    title: "Dashboard",
+    icon: "LayoutDashboard",
+    url: "/dashboard",
+    roleIds: ["dietitian", "admin"],
+    orderIndex: 1
+  },
+  {
+    name: "clients",
+    title: "Danışanlar",
+    icon: "Users",
+    url: "/clients",
+    roleIds: ["dietitian"],
+    orderIndex: 2
+  },
+  {
+    name: "appointments",
+    title: "Randevular",
+    icon: "Calendar",
+    url: "/appointments",
+    roleIds: ["dietitian"],
+    orderIndex: 3
+  },
+  {
+    name: "admin-integrations",
+    title: "Entegrasyonlar",
+    icon: "Plug",
+    url: "/admin/integrations",
+    roleIds: ["admin"],
+    orderIndex: 50
+  }
+];
+```
+
+---
+
+### 18.4 Feature Flag Seed
+
+```ts
+const featureFlags = [
+  {
+    key: "enable_ai_recommendation",
+    value: "false",
+    valueType: "BOOLEAN",
+    environment: "PRODUCTION"
+  },
+  {
+    key: "enable_new_chat_ui",
+    value: "true",
+    valueType: "BOOLEAN",
+    environment: "STAGING"
+  },
+  {
+    key: "max_feedback_screenshot_size_mb",
+    value: "2",
+    valueType: "NUMBER",
+    environment: "PRODUCTION"
+  }
+];
+```
+
+---
+
+### 18.5 Integration Seed
+
+```ts
+const integrations = [
+  {
+    provider: "AWS_SES",
+    type: "EMAIL",
+    name: "Default AWS SES Email Provider",
+    ownerType: "SYSTEM",
+    status: "ACTIVE",
+    isDefault: true,
+    config: {
+      region: "eu-north-1",
+      senderEmail: "noreply@thefoodhero.com"
+    },
+    secretRef: "thefoodhero/prod/aws-ses"
+  },
+  {
+    provider: "NETGSM",
+    type: "SMS",
+    name: "Default NetGSM SMS Provider",
+    ownerType: "SYSTEM",
+    status: "ACTIVE",
+    isDefault: true,
+    config: {
+      header: "TFHERO"
+    },
+    secretRef: "thefoodhero/prod/netgsm"
+  },
+  {
+    provider: "IYZICO",
+    type: "PAYMENT",
+    name: "Default Iyzico Payment Provider",
+    ownerType: "SYSTEM",
+    status: "PASSIVE",
+    isDefault: false,
+    config: {
+      baseUrl: "https://api.iyzipay.com"
+    },
+    secretRef: "thefoodhero/prod/iyzico"
+  }
+];
+```
+
+---
+
+## 19. Servis İç Mimari Önerisi
+
+TheFoodHero’nun mevcut mimarisi korunarak app-service için aşağıdaki dosya yapısı önerilir:
+
+```text
+services/app-service
+  src
+    app
+      useCases
+        app
+          CreateAppUseCase.ts
+          UpdateAppUseCase.ts
+          GetAppUseCase.ts
+        appSettings
+          CreateAppSettingsUseCase.ts
+          UpdateAppSettingsUseCase.ts
+          GetAppSettingsByEnvironmentUseCase.ts
+        menu
+          CreateMenuUseCase.ts
+          UpdateMenuUseCase.ts
+          GetMenusByRoleUseCase.ts
+          ReorderMenusUseCase.ts
+        featureFlag
+          CreateFeatureFlagUseCase.ts
+          UpdateFeatureFlagUseCase.ts
+          GetFeatureFlagValueUseCase.ts
+          GetFeatureFlagsByAppUseCase.ts
+        feedback
+          CreateFeedbackUseCase.ts
+          UpdateFeedbackStatusUseCase.ts
+          GetFeedbackListUseCase.ts
+        infoRequest
+          CreateInfoRequestUseCase.ts
+          UpdateInfoRequestStatusUseCase.ts
+        integration
+          CreateIntegrationUseCase.ts
+          UpdateIntegrationUseCase.ts
+          GetDefaultIntegrationUseCase.ts
+          SetDefaultIntegrationUseCase.ts
+          TestIntegrationConnectionUseCase.ts
+          MarkIntegrationSuccessUseCase.ts
+          MarkIntegrationErrorUseCase.ts
+
+      services
+        AppSettingsService.ts
+        MenuTreeBuilder.ts
+        FeatureFlagParser.ts
+        IntegrationResolver.ts
+        IntegrationSecretResolver.ts
+        FeedbackService.ts
+
+    domain
+      entities
+        App.ts
+        AppSettings.ts
+        AppMenu.ts
+        FeatureFlag.ts
+        AppFeedback.ts
+        AppInfoReq.ts
+        Integration.ts
+      enums
+        AppType.ts
+        Environment.ts
+        FeatureValueType.ts
+        IntegrationProvider.ts
+        IntegrationType.ts
+        IntegrationStatus.ts
+      rules
+        AppSettingsRules.ts
+        FeatureFlagRules.ts
+        IntegrationRules.ts
+        MenuRules.ts
+
+    infrastructure
+      db
+        prisma
+          schema.prisma
+        repositories
+          AppRepository.ts
+          AppSettingsRepository.ts
+          AppMenuRepository.ts
+          FeatureFlagRepository.ts
+          AppFeedbackRepository.ts
+          AppInfoReqRepository.ts
+          IntegrationRepository.ts
+      cache
+        AppCacheService.ts
+        FeatureFlagCacheService.ts
+        MenuCacheService.ts
+        IntegrationCacheService.ts
+      events
+        AppEventPublisher.ts
+        AppEventConsumer.ts
+      integrations
+        IntegrationTester.ts
+        providers
+          NetgsmIntegrationTester.ts
+          AwsSesIntegrationTester.ts
+          IyzicoIntegrationTester.ts
+          GoogleIntegrationTester.ts
+      security
+        SecretMasker.ts
+        ConfigSanitizer.ts
+
+    interfaces
+      http
+        controllers
+          AppController.ts
+          AppSettingsController.ts
+          MenuController.ts
+          FeatureFlagController.ts
+          FeedbackController.ts
+          InfoRequestController.ts
+          IntegrationController.ts
+          InternalAppController.ts
+          AdminAppController.ts
+        routes
+          appRoutes.ts
+          publicRoutes.ts
+          internalRoutes.ts
+          adminRoutes.ts
+
+    server.ts
+```
+
+---
+
+## 20. Domain Servisleri
+
+### 20.1 FeatureFlagParser
+
+Feature flag değerini `valueType` değerine göre parse eder.
+
+```ts
+class FeatureFlagParser {
+  parse(value: string, valueType: FeatureValueType) {
+    switch (valueType) {
+      case "BOOLEAN":
+        return value === "true";
+      case "NUMBER":
+        return Number(value);
+      case "JSON":
+        return JSON.parse(value);
+      case "STRING":
+      default:
+        return value;
+    }
+  }
+}
+```
+
+---
+
+### 20.2 MenuTreeBuilder
+
+Flat menü listesini parent-child yapıya çevirir.
+
+Görevi:
+
+* parentName’e göre menüleri gruplamak
+* orderIndex’e göre sıralamak
+* autoSelectFirstChild davranışını response’a eklemek
+* frontend’in doğrudan kullanabileceği tree response üretmek
+
+---
+
+### 20.3 IntegrationResolver
+
+Varsayılan entegrasyon seçimini yapar.
+
+Sıralama:
+
+```text
+1. owner-specific ACTIVE default integration
+2. SYSTEM ACTIVE default integration
+3. Uygun kayıt yoksa hata
+```
+
+---
+
+### 20.4 IntegrationSecretResolver
+
+Secret yönetimini soyutlar.
+
+Öncelik:
+
+```text
+1. secretRef varsa secret manager üzerinden oku
+2. encryptedData varsa decrypt et
+3. Hiçbiri yoksa sadece config döndür
+```
+
+---
+
+### 20.5 ConfigSanitizer
+
+Response ve loglardan hassas alanları temizler.
+
+Maskelenmesi gereken key örnekleri:
+
+```text
+apiKey
+secret
+password
+token
+privateKey
+clientSecret
+accessToken
+refreshToken
+```
+
+---
+
+## 21. Repository Tasarımı
+
+Her model için ayrı repository kullanılmalıdır. Repository katmanı Prisma delegate kullanımını izole eder.
+
+Örnek repositoryler:
+
+```text
+AppRepository
+AppSettingsRepository
+AppMenuRepository
+FeatureFlagRepository
+AppFeedbackRepository
+AppInfoReqRepository
+IntegrationRepository
+```
+
+`IntegrationRepository` için özel metotlar:
+
+```ts
+findDefaultByOwner(type, ownerType, ownerId)
+findSystemDefault(type)
+setDefault(integrationId)
+markSuccess(integrationId)
+markError(integrationId, errorMessage)
+```
+
+`FeatureFlagRepository` için özel metotlar:
+
+```ts
+findByKey(appId, environment, key)
+findAllByApp(appId, environment)
+disable(id)
+```
+
+`AppMenuRepository` için özel metotlar:
+
+```ts
+findActiveByRole(roleId, appId)
+findByParentName(parentName)
+reorder(items)
+```
+
+---
+
+## 22. Hata Yönetimi
+
+Önerilen hata kodları:
+
+```text
+APP_NOT_FOUND
+APP_SETTINGS_NOT_FOUND
+APP_SETTINGS_ALREADY_EXISTS
+MENU_NOT_FOUND
+MENU_NAME_ALREADY_EXISTS
+FEATURE_FLAG_NOT_FOUND
+FEATURE_FLAG_ALREADY_EXISTS
+FEATURE_FLAG_PARSE_ERROR
+FEEDBACK_NOT_FOUND
+INFO_REQUEST_NOT_FOUND
+INTEGRATION_NOT_FOUND
+INTEGRATION_DEFAULT_NOT_FOUND
+INTEGRATION_TEST_FAILED
+INTEGRATION_SECRET_RESOLVE_FAILED
+INVALID_ENVIRONMENT
+INVALID_APP_TYPE
+UNAUTHORIZED_ADMIN_OPERATION
+```
+
+Örnek error response:
+
+```json
+{
+  "success": false,
+  "code": "FEATURE_FLAG_PARSE_ERROR",
+  "message": "Feature flag value cannot be parsed as JSON.",
+  "details": {
+    "key": "chat_config",
+    "valueType": "JSON"
+  }
+}
+```
+
+---
+
+## 23. Loglama ve Monitoring
+
+App-service için loglanması gereken olaylar:
+
+* App settings update
+* Feature flag update
+* Menu update
+* Integration create/update/test
+* Integration error
+* Feedback created
+* Info request created
+* Cache miss/cache hit oranları
+* Internal endpoint çağrıları
+* Secret resolve failure
+* Unauthorized admin operation
+
+Loglarda dikkat edilmesi gerekenler:
+
+* Secret değerleri loglanmamalıdır.
+* encryptedData içeriği loglanmamalıdır.
+* Authorization header loglanmamalıdır.
+* Provider raw response sanitize edilmelidir.
+
+Metric önerileri:
+
+```text
+app_service_request_total
+app_service_request_duration_ms
+app_service_feature_flag_lookup_total
+app_service_menu_lookup_total
+app_service_integration_lookup_total
+app_service_integration_error_total
+app_service_feedback_created_total
+app_service_cache_hit_total
+app_service_cache_miss_total
+```
+
+---
+
+## 24. Test Senaryoları
+
+### 24.1 AppSettings Testleri
+
+* Aynı `appId + environment` ile ikinci kayıt oluşturulamamalı.
+* Geçersiz environment kabul edilmemeli.
+* Aktif app settings doğru dönmeli.
+* Pasif app settings public response içinde dönmemeli.
+* Maintenance mode doğru response üretmeli.
+
+---
+
+### 24.2 AppMenu Testleri
+
+* Role göre doğru menüler dönmeli.
+* Pasif menüler dönmemeli.
+* Parent-child tree doğru kurulmalı.
+* `orderIndex` sıralaması doğru çalışmalı.
+* Duplicate name engellenmeli.
+* Boş roleIds davranışı net test edilmeli.
+
+---
+
+### 24.3 FeatureFlag Testleri
+
+* Boolean flag doğru parse edilmeli.
+* Number flag doğru parse edilmeli.
+* JSON flag valid değilse hata dönmeli.
+* Aynı app/environment/key tekrar oluşturulamamalı.
+* Inactive flag default davranışa düşmeli.
+* Cache invalidation update sonrası çalışmalı.
+
+---
+
+### 24.4 AppFeedback Testleri
+
+* Feedback PENDING olarak oluşmalı.
+* Status update akışı doğru çalışmalı.
+* Büyük screenshot payload reddedilmeli.
+* Kullanıcı başına rate limit çalışmalı.
+* Context JSON kaydedilmeli.
+* Feedback created event publish edilmeli.
+
+---
+
+### 24.5 AppInfoReq Testleri
+
+* Geçersiz email reddedilmeli.
+* Boş message reddedilmeli.
+* Rate limit çalışmalı.
+* Kayıt sonrası event publish edilmeli.
+* Admin status update çalışmalı.
+
+---
+
+### 24.6 Integration Testleri
+
+* Default integration lookup doğru provider’ı dönmeli.
+* Owner-specific integration system default’tan önce tercih edilmeli.
+* Disabled integration kullanılmamalı.
+* Error status integration kullanılmamalı.
+* Secret response içinde plaintext dönmemeli.
+* Test connection başarısız olursa `lastErrorAt` ve `lastErrorMsg` güncellenmeli.
+* Başarılı kullanımda `lastSuccessAt` güncellenmeli.
+* Aynı owner/type altında birden fazla default oluşmamalı.
+
+---
+
+## 25. Migration Stratejisi
+
+Mevcut schema production’a çıkmadan önce düzenlenebilir. Eğer production’da kullanılmaya başlandıysa migration dikkatli yapılmalıdır.
+
+Önerilen güvenli sıra:
+
+```text
+1. Nullable yeni alanları ekle.
+2. Yeni indexleri ekle.
+3. Duplicate veri kontrolü yap.
+4. Backfill gerekiyorsa script çalıştır.
+5. Relation eklenecekse önce eksik App kayıtlarını oluştur.
+6. Unique constraint ekle.
+7. Kod tarafını yeni alanları kullanacak şekilde güncelle.
+8. Cache invalidation ve event yapısını ekle.
+9. Eski alanlar kaldırılacaksa sonraki migration’a bırak.
+```
+
+Riskli değişiklikler:
+
+| Değişiklik | Risk |
+|---|---|
+| AppMenu.name unique yapmak | Duplicate name varsa migration fail olur. |
+| AppSettings.appId relation eklemek | Karşılığı olmayan appId varsa fail olur. |
+| FeatureFlag.appId relation eklemek | Karşılığı olmayan appId varsa fail olur. |
+| Integration default unique index | Birden fazla default varsa fail olur. |
+| screenshotBase64 nullable yapmak | Düşük riskli. |
+
+---
+
+## 26. En Önemli Tasarım Kararları
+
+1. App-service merkezi config ve integration registry servisi olarak konumlanmalıdır.
+2. App-service business domain servislerinin yerine geçmemelidir.
+3. Diğer servislerin tablolarına foreign key verilmemelidir.
+4. Aynı servis içindeki `AppSettings` ve `FeatureFlag` modelleri `App` ile ilişkilendirilebilir.
+5. Feature flag değerleri runtime’da parse edilmeli ve validate edilmelidir.
+6. Menü yapısı role göre filtrelenebilir olmalıdır.
+7. Menü yapısı ileride permission bazlı genişletilebilir olmalıdır.
+8. Integration secret bilgileri plaintext tutulmamalıdır.
+9. `secretRef` öncelikli yaklaşım olmalıdır.
+10. Integration default seçimi transaction ile yapılmalıdır.
+11. Sık okunan app settings, menu, feature flag ve integration lookup sonuçları cache’lenmelidir.
+12. Config değişikliklerinde Redis Stream event publish edilmelidir.
+13. Admin işlemleri auditlenmelidir.
+14. Feedback screenshot için uzun vadede object storage kullanılmalıdır.
+15. MVP’de karmaşıklık artırılmadan temel config, menu, feature flag ve integration yönetimi tamamlanmalıdır.
+
+---
+
+## 27. Önerilen İlk Geliştirme Sırası
+
+1. Prisma schema’yı mevcut haliyle migrate edilebilir hale getir.
+2. App, AppSettings, AppMenu, FeatureFlag, Integration seed datalarını hazırla.
+3. AppSettings public/internal okuma endpointlerini yaz.
+4. Role bazlı menu okuma endpointini yaz.
+5. Feature flag okuma ve parse mekanizmasını yaz.
+6. Feedback oluşturma endpointini yaz.
+7. Info request oluşturma endpointini yaz.
+8. Admin CRUD endpointlerini ekle.
+9. Integration default lookup endpointini yaz.
+10. Integration set-default işlemini transaction ile yaz.
+11. Integration secret masking ve sanitizer yapısını ekle.
+12. Redis cache ekle.
+13. Cache invalidation kurallarını ekle.
+14. Redis Stream event publisher ekle.
+15. notify-service için SMS/email integration lookup entegrasyonunu yap.
+16. subscription-service için payment integration lookup entegrasyonunu yap.
+17. ai-service için AI provider config lookup entegrasyonunu yap.
+18. Admin panelde feature flag/menu/integration yönetim ekranlarını bağla.
+19. Integration test connection mekanizmasını ekle.
+20. Audit log ve advanced config history yapısını MVP sonrasına bırak.
+
+---
+
+## 28. Sonuç
+
+`app-service`, TheFoodHero ekosisteminde sadece birkaç uygulama ayarı tutan basit bir servis olarak düşünülmemelidir. Bu servis, platformun merkezi konfigürasyon ve entegrasyon registry servisi olarak tasarlanmalıdır.
+
+Bu yaklaşımla TheFoodHero’da web, mobil, admin panel ve mikroservislerin çalışma davranışları merkezi olarak yönetilebilir. Feature flag sistemi sayesinde yeni özellikler kontrollü açılabilir. Menü sistemi sayesinde frontend rollere göre dinamik hale gelir. Integration modeli sayesinde SMS, email, ödeme, AI, harita ve storage sağlayıcıları sistem genelinde veya owner bazlı yönetilebilir.
+
+MVP aşamasında temel yapı sade tutulmalıdır. App, AppSettings, AppMenu, FeatureFlag, Feedback, InfoRequest ve Integration modelleri yeterlidir. Ancak production kalitesinde cache, event publish, secret masking, admin authorization ve transaction yönetimi mutlaka eklenmelidir.
+
+Bu yapı kurulduğunda app-service, TheFoodHero’nun ileride büyüyecek SaaS ekosistemi için merkezi ve sürdürülebilir bir platform konfigürasyon servisi haline gelir.
