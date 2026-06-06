@@ -2,675 +2,576 @@
 
 ## 1. Amaç
 
-`subscription-service`, TheFoodHero ekosisteminde abonelik planlarını, ödeme durumlarını, kullanım limitlerini, özellik yetkilerini ve servisler arası abonelik kontrollerini yöneten merkezi servistir.
-
-Bu servis özellikle şu ihtiyaçları karşılar:
+`subscription-service`, TheFoodHero ekosisteminde abonelik planlarını, abonelik durumlarını, plan geçişlerini, deneme süresini, abonelik temelli kullanım haklarını ve servisler arası abonelik kontrolünü yöneten domain servisidir.
 
 - Diyetisyen veya klinik bazlı abonelik yönetimi
-- Free / Trial / Basic / Pro / Clinic gibi planların tanımlanması
-- AI kullanım limiti, danışan limiti, randevu limiti, depolama limiti gibi kotaların yönetimi
-- Ödeme sağlayıcılarıyla entegrasyon
-- Plan yükseltme, düşürme, iptal ve yenileme akışları
-- Diğer servisler için feature access ve limit kontrolü
-- Event-driven mimariyle servisler arası abonelik durumunun yayılması
+- Free / Trial / Basic / Pro / Clinic gibi planların yönetimi
+- Abonelik yaşam döngüsü takibi
+- Trial başlatma ve sonlandırma
+- Plan yükseltme, plan düşürme ve iptal süreçleri
+- App-service içindeki feature tanımlarına referanslı subscription entitlement yönetimi
+- AI, SMS, danışan, randevu, store ve benzeri kullanımlar için quota/usage yönetimi
+- Payment-service ile subscription ödeme akışının koordinasyonu
+- Diğer servislere subscription summary, feature access ve limit kontrolü sağlama
+- Event-driven mimariyle abonelik durum değişikliklerinin yayılması
 
----
 
-## 2. Servisin Sorumlulukları
 
-`subscription-service` şu sorumluluklara sahip olmalıdır:
+## 2. Servisin sorumlulukları
 
-- Plan ve paket yönetimi
-- Plan özelliklerinin ve limitlerinin yönetimi
+`subscription-service` aşağıdaki işlerden sorumludur:
+
+- Plan oluşturma ve yönetme
+- Plan fiyat referanslarını tutma
 - Abonelik oluşturma
-- Deneme süresi yönetimi
-- Abonelik durumu takibi
-- Ödeme işlemi ve ödeme sağlayıcı referanslarının tutulması
-- Fatura/ödeme geçmişi kaydı
-- Kullanım limiti takibi
-- Servisler arası entitlement kontrolü
+- Trial subscription başlatma
+- Abonelik state yönetimi
+- Plan değişikliklerini yönetme
+- Dönem sonunda downgrade işlemi planlama
+- Abonelik iptali
+- Abonelik askıya alma / yeniden aktif etme
+- Subscription entitlement snapshot oluşturma
+- Feature referansları üzerinden plan haklarını yönetme
+- Usage counter tutma
+- Usage limit kontrolü
+- Servisler arası `check-feature`, `check-limit`, `increment-usage` endpointleri sağlama
 - Subscription event publish etme
-- Webhook ile ödeme sağlayıcı dönüşlerini işleme
+- Payment-service eventlerini consume ederek abonelik state güncelleme
 
-Bu servis şu sorumluluklara sahip olmamalıdır:
 
-- Kullanıcı kimlik doğrulama
-- Kullanıcı profil detayları
-- Diyet planı oluşturma
-- Chat mesajı saklama
-- AI cevabı üretme
-- Store ürün yönetimi
-- Randevu yönetimi
-
-Bu bilgiler ilgili servislerin kendi bounded-context’inde kalmalıdır.
-
----
-
-## 3. Diğer Servislerle Entegrasyon
-
-### 3.1 auth-service
-
-`auth-service`, kullanıcının kimliğini doğrular. Subscription-service, auth-service’den kullanıcı doğrulaması yapmaz; sadece gelen internal token veya user context üzerinden işlem yapar.
-
-Kullanım örnekleri:
-
-- Kullanıcı login olduğunda frontend subscription bilgisi isteyebilir.
-- Auth-service JWT içerisine temel subscription summary koyabilir ancak kaynak veri subscription-service olmalıdır.
-- JWT içine sadece hızlı erişim için özet bilgi yazılabilir.
-
-Örnek JWT claim:
-
-```json
-{
-  "userId": "uuid",
-  "tenantId": "uuid",
-  "role": "dietician",
-  "subscriptionPlan": "PRO",
-  "subscriptionStatus": "ACTIVE"
-}
-```
-
-Ancak kritik kontrollerde JWT içeriğine güvenmek yerine subscription-service sorgulanmalıdır.
-
----
-
-### 3.2 user-service
-
-`user-service`, kullanıcı ve tenant/profil bilgilerini yönetir.
-
-Subscription-service şu bilgileri user-service’den referans olarak kullanır:
-
-- `userId`
-- `tenantId`
-- `clinicId`
-- `role`
-- `ownerUserId`
-
-Subscription-service kullanıcı detaylarını kopyalamamalıdır. Gerekirse read-model/projection olarak minimal bilgiler tutulabilir.
-
-Örnek kullanım:
-
-- Diyetisyen kayıt olduğunda Free veya Trial abonelik başlatılır.
-- Klinik hesabı oluşturulduğunda clinic subscription açılır.
-- Kullanıcı silinirse abonelik pasife alınır.
-
----
-
-### 3.3 appointment-service
-
-Appointment-service, randevu oluştururken subscription-service’e limit kontrolü yapar.
-
-Örnek kontroller:
-
-- Bu plan aylık kaç randevu oluşturabilir?
-- Online görüşme özelliği açık mı?
-- Grup görüşme özelliği açık mı?
-- Takvim entegrasyonu aktif mi?
-
-Örnek akış:
+## 3. Servisin Konumu
 
 ```text
-appointment-service
-  -> subscription-service: CanUseFeature(tenantId, "appointment.create")
-  -> subscription-service: CheckLimit(tenantId, "appointments.monthly")
-  -> appointment oluştur
-  -> subscription-service: IncrementUsage(tenantId, "appointments.monthly", 1)
+Frontend / Mobile / Admin
+        |
+        v
+API Gateway
+        |
+        +--> auth-service
+        +--> user-service
+        +--> app-service
+        +--> payment-service
+        +--> subscription-service
+        +--> appointment-service
+        +--> chat-service
+        +--> ai-service
+        +--> notify-service
 ```
 
----
-
-### 3.4 chat-service
-
-Chat-service, mesajlaşma ve görüşme özellikleri için abonelik kontrolü yapar.
-
-Örnek kontroller:
-
-- Danışan ile chat aktif mi?
-- Görüntülü görüşme aktif mi?
-- Aylık mesajlaşma limiti var mı?
-- Dosya gönderme özelliği aktif mi?
-
-Chat-service her mesajda uzak servis çağrısı yapmamalıdır. Bunun yerine kısa süreli cache kullanılabilir.
-
-Öneri:
-
-- Redis cache TTL: 5-15 dakika
-- Kritik plan değişikliklerinde `subscription.updated` eventi ile cache temizlenir.
-
----
-
-### 3.5 ai-service
-
-AI kullanımı maliyetli olduğu için subscription-service ile en sıkı entegre olacak servislerden biridir.
-
-Örnek limitler:
-
-- Aylık AI analiz hakkı
-- Günlük AI öneri hakkı
-- AI model seviyesi
-- Gelişmiş rapor üretim hakkı
-- Mesaj duygu analizi hakkı
-
-Örnek akış:
-
-```text
-ai-service
-  -> subscription-service: CheckLimit(tenantId, "ai.monthly_tokens")
-  -> AI işlemi yapılır
-  -> subscription-service: IncrementUsage(tenantId, "ai.monthly_tokens", usedTokenCount)
-```
-
-AI kullanımında `reserve + commit` modeli tercih edilebilir.
-
-Örnek:
-
-```text
-1. ReserveUsage(estimatedTokens)
-2. AI çağrısı yapılır
-3. CommitUsage(actualTokens)
-4. Hata olursa ReleaseUsage(reservationId)
-```
-
-Bu yapı token limiti aşımını ve yarış durumlarını azaltır.
-
----
-
-### 3.6 food-service
-
-Food-service için subscription kontrolü daha çok gelişmiş özelliklerde kullanılabilir.
-
-Örnekler:
-
-- Özel besin veritabanı oluşturma
-- Kendi tariflerini kaydetme
-- Besin analiz raporu alma
-- Premium besin verilerine erişim
-
----
-
-### 3.7 diet-service
-
-Diet-service, diyet planı oluşturma ve tarif/menü özellikleri için subscription-service’e bağımlı olur.
-
-Örnek kontroller:
-
-- Aylık diyet planı oluşturma limiti
-- Hazır şablon kullanımı
-- AI destekli menü üretimi
-- PDF export
-- Gelişmiş danışan raporu
-
----
-
-### 3.8 notify-service
-
-Notify-service, SMS/e-posta/push bildirimlerinde subscription limitlerini kontrol edebilir.
-
-Örnek limitler:
-
-- Aylık SMS hakkı
-- E-posta bildirim hakkı
-- Otomatik hatırlatma hakkı
-- WhatsApp bildirim entegrasyonu
-
-Önerilen yapı:
-
-```text
-notify-service
-  -> subscription-service: CheckLimit(tenantId, "notifications.sms.monthly")
-  -> SMS gönder
-  -> subscription-service: IncrementUsage(tenantId, "notifications.sms.monthly", 1)
-```
-
----
-
-### 3.9 store-service
-
-Store-service, diyetisyenin dijital ürün veya hizmet satışı yapmasını sağlar.
-
-Örnek kontroller:
-
-- Store modülü aktif mi?
-- Maksimum ürün sayısı
-- Dijital dosya satışı açık mı?
-- Komisyon oranı hangi plana göre belirleniyor?
-- Ödeme alma özelliği aktif mi?
-
----
-
-## 4. Temel Kavramlar
-
-### 4.1 Plan
-
-Plan, kullanıcının satın alabileceği pakettir.
-
-Örnek planlar:
-
-- FREE
-- TRIAL
-- BASIC
-- PRO
-- CLINIC
-- ENTERPRISE
-
-Plan doğrudan subscription değildir. Plan sadece şablondur.
-
----
-
-### 4.2 Subscription
-
-Subscription, bir tenant veya kullanıcının aktif aboneliğidir.
-
-Örnek:
-
-```text
-Tenant A -> PRO plan -> ACTIVE -> 2026-06-01 / 2026-07-01
-```
-
----
-
-### 4.3 Entitlement
-
-Entitlement, bir planın hangi özellikleri kullanabileceğini belirler.
-
-Örnek:
-
-```text
-feature: ai.menu.generate
-enabled: true
-limit: 100
-period: MONTHLY
-```
-
----
-
-### 4.4 Usage
-
-Usage, tenant’ın belirli bir dönemde yaptığı kullanımı tutar.
-
-Örnek:
-
-```text
-tenantId: abc
-featureKey: ai.monthly_tokens
-period: 2026-06
-usedValue: 35000
-limitValue: 100000
-```
-
----
-
-### 4.5 Billing Account
-
-Billing account, ödeme yapılacak müşteri varlığını temsil eder.
-
-Bir bireysel diyetisyen veya klinik için ayrı olabilir.
-
----
-
-## 5. Veritabanı Tasarımı
-
-Veritabanı PostgreSQL olmalıdır. Subscription-service kendi veritabanına sahip olmalıdır.
-
-Diğer servislerin tablolarına foreign key verilmemelidir. Servisler arası ilişki `userId`, `tenantId`, `clinicId` gibi referans ID’lerle kurulmalıdır.
-
----
-
-## 6. Önerilen Tablolar
-
-### 6.1 plans
+## 7. Servis Modeli
+
+- `Plan`
+- `PlanPrice`
+- `SubscriptionFeatureRef`
+- `PlanEntitlement`
+- `BillingProfileRef`
+- `Subscription`
+- `SubscriptionScheduledChange`
+- `SubscriptionUsageCounter`
+- `SubscriptionUsageReservation`
+- `SubscriptionEventLog`
+- `SubscriptionPaymentRef`
+
+## 9. Veritabanı Tasarımı
+
+### 9.1 Plan
 
 Plan şablonlarını tutar.
 
-| Alan | Tip | Açıklama |
-|---|---|---|
-| id | UUID | Primary key |
-| code | VARCHAR | FREE, BASIC, PRO, CLINIC |
-| name | VARCHAR | Görünen plan adı |
-| description | TEXT | Plan açıklaması |
-| is_active | BOOLEAN | Plan aktif mi |
-| sort_order | INT | Listeleme sırası |
-| created_at | TIMESTAMP | Oluşturulma tarihi |
-| updated_at | TIMESTAMP | Güncellenme tarihi |
+```prisma
+model Plan {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  name        String
+  description String?
+  isActive    Boolean  @default(true)
+  sortOrder   Int      @default(0)
 
----
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-### 6.2 plan_prices
+  prices       PlanPrice[]
+  entitlements PlanEntitlement[]
+  subscriptions Subscription[]
 
-Plan fiyatlarını tutar. Aynı planın aylık/yıllık fiyatları olabilir.
-
-| Alan | Tip | Açıklama |
-|---|---|---|
-| id | UUID | Primary key |
-| plan_id | UUID | Plan referansı |
-| billing_period | ENUM | MONTHLY, YEARLY |
-| currency | VARCHAR | TRY, USD |
-| amount | DECIMAL | Fiyat |
-| tax_rate | DECIMAL | KDV oranı |
-| is_active | BOOLEAN | Aktif fiyat mı |
-| provider_price_id | VARCHAR | Stripe/Iyzico fiyat referansı |
-| created_at | TIMESTAMP | Oluşturulma tarihi |
-| updated_at | TIMESTAMP | Güncellenme tarihi |
-
----
-
-### 6.3 features
-
-Sistemde kontrol edilecek özellikleri tutar.
-
-| Alan | Tip | Açıklama |
-|---|---|---|
-| id | UUID | Primary key |
-| key | VARCHAR | Özellik anahtarı |
-| name | VARCHAR | Görünen ad |
-| description | TEXT | Açıklama |
-| value_type | ENUM | BOOLEAN, NUMBER, STRING |
-| created_at | TIMESTAMP | Oluşturulma tarihi |
-| updated_at | TIMESTAMP | Güncellenme tarihi |
-
-Örnek feature key’leri:
-
-```text
-client.max_count
-appointment.monthly_count
-chat.enabled
-video_call.enabled
-ai.menu_generate.monthly_count
-ai.token.monthly_count
-diet_plan.monthly_count
-pdf_export.enabled
-store.enabled
-store.product.max_count
-notification.sms.monthly_count
+  @@map("Plan")
+}
 ```
 
----
+Örnek planlar:
 
-### 6.4 plan_entitlements
+```text
+FREE
+TRIAL
+BASIC
+PRO
+CLINIC
+ENTERPRISE
+```
 
-Planların hangi özellikleri hangi limitlerle sunduğunu tutar.
+Plan doğrudan abonelik değildir. Plan sadece abonelik oluşturulurken kullanılan ticari şablondur.
 
-| Alan | Tip | Açıklama |
-|---|---|---|
-| id | UUID | Primary key |
-| plan_id | UUID | Plan referansı |
-| feature_id | UUID | Feature referansı |
-| is_enabled | BOOLEAN | Özellik açık mı |
-| limit_value | DECIMAL | Limit değeri |
-| period | ENUM | NONE, DAILY, WEEKLY, MONTHLY, YEARLY |
-| metadata | JSONB | Ek bilgiler |
-| created_at | TIMESTAMP | Oluşturulma tarihi |
-| updated_at | TIMESTAMP | Güncellenme tarihi |
+
+
+### 9.2 PlanPrice
+
+Plan fiyat bilgisini tutar. Gerçek tahsilat payment-service tarafından yapılır.
+
+Bu tablo payment işlemi yapmaz, sadece subscription planının fiyatını ve payment-service’e gönderilecek tutarı belirlemek için kullanılır.
+
+```prisma
+model PlanPrice {
+  id            String        @id @default(cuid())
+  planId        String
+  billingPeriod BillingPeriod
+  currency      String        @default("TRY")
+  amount        Decimal       @db.Decimal(18, 2)
+  taxRate       Decimal       @default(0) @db.Decimal(5, 2)
+  isActive      Boolean       @default(true)
+
+  paymentProductRef String?
+  paymentPriceRef   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  plan Plan @relation(fields: [planId], references: [id])
+
+  @@index([planId])
+  @@unique([planId, billingPeriod, currency, isActive])
+  @@map("PlanPrice")
+}
+```
+
+`paymentProductRef` ve `paymentPriceRef`, payment-service tarafında bir ürün/fiyat karşılığı tanımlanırsa referans olarak kullanılabilir.
+
+Bu alanlar provider referansı değil, payment-service referansıdır.
+
+
+
+### 9.3 SubscriptionFeatureRef
+
+App-service içindeki feature tanımlarının subscription-service projection karşılığıdır.
+
+```prisma
+model SubscriptionFeatureRef {
+  id String @id @default(cuid())
+
+  appFeatureId String?
+  featureKey   String @unique
+  name         String
+  description  String?
+  valueType    SubscriptionFeatureValueType
+
+  sourceService String @default("app-service")
+  isActive      Boolean @default(true)
+  syncedAt      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  entitlements PlanEntitlement[]
+
+  @@index([appFeatureId])
+  @@index([featureKey])
+  @@index([isActive])
+  @@map("SubscriptionFeatureRef")
+}
+```
+
+App-service feature güncellendiğinde event yayınlar:
+
+```text
+app.feature.created
+app.feature.updated
+app.feature.disabled
+```
+
+Subscription-service bu eventleri consume ederek `SubscriptionFeatureRef` tablosunu günceller.
+
+
+
+### 9.4 PlanEntitlement
+
+Planın hangi feature’ı hangi limitlerle sunduğunu belirtir.
+
+```prisma
+model PlanEntitlement {
+  id        String @id @default(cuid())
+  planId    String
+  featureId String
+
+  isEnabled  Boolean @default(true)
+  limitValue Decimal? @db.Decimal(18, 4)
+  period     EntitlementPeriod @default(NONE)
+  metadata   Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  plan    Plan @relation(fields: [planId], references: [id])
+  feature SubscriptionFeatureRef @relation(fields: [featureId], references: [id])
+
+  @@unique([planId, featureId])
+  @@index([planId])
+  @@index([featureId])
+  @@map("PlanEntitlement")
+}
+```
 
 Örnek:
 
 ```text
 PRO -> ai.menu_generate.monthly_count -> enabled -> 100 -> MONTHLY
-BASIC -> video_call.enabled -> false
-CLINIC -> client.max_count -> 500
+BASIC -> video_call.enabled -> false -> NONE
+CLINIC -> staff.max_count -> enabled -> 10 -> NONE
 ```
 
----
+### 9.5 BillingProfileRef
 
-### 6.5 billing_accounts
+Fatura kesme ve finansal bilgi payment-service tarafında tutulur. Subscription-service sadece aboneliğin hangi tenant/user/clinic adına yürüdüğünü bilmelidir.
 
-Ödeme yapılacak müşteri hesabını tutar.
+```prisma
+model BillingProfileRef {
+  id String @id @default(cuid())
 
-| Alan | Tip | Açıklama |
-|---|---|---|
-| id | UUID | Primary key |
-| tenant_id | UUID | Tenant referansı |
-| owner_user_id | UUID | Hesap sahibi kullanıcı |
-| account_type | ENUM | INDIVIDUAL, CLINIC |
-| company_name | VARCHAR | Şirket/klinik adı |
-| tax_number | VARCHAR | Vergi no |
-| tax_office | VARCHAR | Vergi dairesi |
-| billing_email | VARCHAR | Fatura e-postası |
-| billing_phone | VARCHAR | Telefon |
-| billing_address | TEXT | Fatura adresi |
-| country | VARCHAR | Ülke |
-| city | VARCHAR | Şehir |
-| provider_customer_id | VARCHAR | Ödeme sağlayıcı müşteri ID |
-| created_at | TIMESTAMP | Oluşturulma tarihi |
-| updated_at | TIMESTAMP | Güncellenme tarihi |
+  tenantId    String
+  ownerUserId String
+  clinicId    String?
 
----
+  accountType BillingAccountType @default(INDIVIDUAL)
 
-### 6.6 subscriptions
+  paymentCustomerRef String?
+  paymentMerchantRef String?
 
-Aktif veya geçmiş abonelikleri tutar.
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-| Alan | Tip | Açıklama |
-|---|---|---|
-| id | UUID | Primary key |
-| tenant_id | UUID | Tenant referansı |
-| billing_account_id | UUID | Billing account |
-| plan_id | UUID | Plan referansı |
-| status | ENUM | TRIALING, ACTIVE, PAST_DUE, CANCELED, EXPIRED, SUSPENDED |
-| billing_period | ENUM | MONTHLY, YEARLY |
-| current_period_start | TIMESTAMP | Dönem başlangıcı |
-| current_period_end | TIMESTAMP | Dönem bitişi |
-| trial_start | TIMESTAMP | Trial başlangıcı |
-| trial_end | TIMESTAMP | Trial bitişi |
-| cancel_at_period_end | BOOLEAN | Dönem sonunda iptal |
-| canceled_at | TIMESTAMP | İptal tarihi |
-| provider | ENUM | NONE, IYZICO, STRIPE, MANUAL |
-| provider_subscription_id | VARCHAR | Ödeme sağlayıcı abonelik ID |
-| plan_snapshot | JSONB | Satın alma anındaki plan/fiyat snapshot |
-| created_at | TIMESTAMP | Oluşturulma tarihi |
-| updated_at | TIMESTAMP | Güncellenme tarihi |
+  subscriptions Subscription[]
 
-Önemli nokta:
+  @@index([tenantId])
+  @@index([ownerUserId])
+  @@index([clinicId])
+  @@map("BillingProfileRef")
+}
+```
 
-`plan_snapshot` tutulmalıdır. Çünkü plan fiyatı veya özellikleri sonradan değişse bile kullanıcının satın aldığı andaki koşullar takip edilebilmelidir.
+Bu tablo fatura adresi, vergi numarası veya ödeme yöntemi tutmaz.
+Bu bilgiler payment-service domain’indedir.
+Buradaki amaç sadece subscription bağlamını temsil etmektir.
 
----
+### 9.6 Subscription
 
-### 6.7 subscription_items
+Abonelik lifecycle merkez modelidir.
 
-İleride add-on veya ekstra paket ihtiyacı olursa kullanılır.
+```prisma
+model Subscription {
+  id String @id @default(cuid())
 
-| Alan | Tip | Açıklama |
-|---|---|---|
-| id | UUID | Primary key |
-| subscription_id | UUID | Subscription referansı |
-| feature_id | UUID | Ek özellik |
-| quantity | INT | Adet |
-| unit_amount | DECIMAL | Birim fiyat |
-| metadata | JSONB | Ek bilgiler |
-| created_at | TIMESTAMP | Oluşturulma tarihi |
+  tenantId String
+  ownerUserId String
+  clinicId String?
 
-Örnek add-on:
+  billingProfileRefId String
+  planId String
+
+  status SubscriptionStatus
+  billingPeriod BillingPeriod
+
+  currentPeriodStart DateTime?
+  currentPeriodEnd   DateTime?
+
+  trialStart DateTime?
+  trialEnd   DateTime?
+
+  cancelAtPeriodEnd Boolean @default(false)
+  canceledAt        DateTime?
+  suspendedAt       DateTime?
+  expiredAt         DateTime?
+
+  activationPaymentRefId String?
+  latestPaymentRefId     String?
+
+  planSnapshot        Json?
+  entitlementSnapshot Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  billingProfileRef BillingProfileRef @relation(fields: [billingProfileRefId], references: [id])
+  plan              Plan              @relation(fields: [planId], references: [id])
+
+  usageCounters SubscriptionUsageCounter[]
+  paymentRefs   SubscriptionPaymentRef[]
+  scheduledChanges SubscriptionScheduledChange[]
+
+  @@index([tenantId])
+  @@index([ownerUserId])
+  @@index([clinicId])
+  @@index([status])
+  @@index([currentPeriodEnd])
+  @@map("Subscription")
+}
+```
+
+#### Önemli alanlar
+
+#### `planSnapshot`
+
+Abonelik oluşturulduğu anda planın ticari snapshot bilgisini tutar.
+
+Örnek:
+
+```json
+{
+  "planCode": "PRO",
+  "planName": "Professional",
+  "billingPeriod": "MONTHLY",
+  "amount": 499.00,
+  "currency": "TRY"
+}
+```
+
+#### `entitlementSnapshot`
+
+Abonelik başladığı anda plan haklarını snapshot olarak tutar.
+
+Örnek:
+
+```json
+{
+  "client.max_count": {
+    "enabled": true,
+    "limitValue": 100,
+    "period": "NONE"
+  },
+  "ai.menu_generate.monthly_count": {
+    "enabled": true,
+    "limitValue": 100,
+    "period": "MONTHLY"
+  }
+}
+```
+
+Bu snapshot, plan sonradan değişse bile mevcut aboneliğin hangi koşullarla başladığını izlemeyi sağlar.
+
+
+
+### 9.7 SubscriptionPaymentRef
+
+Subscription-service payment transaction tutmaz. Ancak payment-service ile ilişki kurabilmek için minimal ödeme referansı tutar.
+
+```prisma
+model SubscriptionPaymentRef {
+  id String @id @default(cuid())
+
+  subscriptionId String
+  tenantId       String
+
+  paymentOrderId       String?
+  paymentTransactionId String?
+  paymentStatus        SubscriptionPaymentStatus
+
+  amount   Decimal? @db.Decimal(18, 2)
+  currency String?
+
+  reason SubscriptionPaymentReason
+
+  requestedAt DateTime @default(now())
+  completedAt DateTime?
+  failedAt    DateTime?
+
+  rawEventRef String?
+  metadata    Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  subscription Subscription @relation(fields: [subscriptionId], references: [id])
+
+  @@index([subscriptionId])
+  @@index([tenantId])
+  @@index([paymentOrderId])
+  @@index([paymentTransactionId])
+  @@map("SubscriptionPaymentRef")
+}
+```
+
+#### PaymentRef ne işe yarar?
+
+Bu model payment-service’in yerini almaz.
+
+Sadece şu sorulara subscription-service içinde cevap verebilmek için kullanılır:
 
 ```text
-+100 AI analiz hakkı
-+50 SMS hakkı
-+10 ekstra danışan
+Bu abonelik hangi payment transaction ile aktif oldu?
+Son yenileme ödemesi başarılı mı?
+Plan değişikliği için ödeme bekleniyor mu?
+Başarısız ödeme sonrası subscription PAST_DUE mu?
 ```
 
----
+### 9.8 SubscriptionScheduledChange
 
-### 6.8 usage_counters
+Plan düşürme, dönem sonunda iptal veya dönem sonunda plan değiştirme gibi ileri tarihli subscription değişikliklerini tutar.
+
+```prisma
+model SubscriptionScheduledChange {
+  id String @id @default(cuid())
+
+  subscriptionId String
+  tenantId       String
+
+  changeType SubscriptionChangeType
+
+  fromPlanId String?
+  toPlanId   String?
+
+  fromBillingPeriod BillingPeriod?
+  toBillingPeriod   BillingPeriod?
+
+  effectiveAt DateTime
+  status ScheduledChangeStatus @default(PENDING)
+
+  requestedByUserId String?
+  reason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  subscription Subscription @relation(fields: [subscriptionId], references: [id])
+
+  @@index([subscriptionId])
+  @@index([tenantId])
+  @@index([effectiveAt])
+  @@index([status])
+  @@map("SubscriptionScheduledChange")
+}
+```
+
+Örnek kullanımlar:
+
+```text
+PRO -> BASIC downgrade dönem sonunda uygulanacak
+Abonelik dönem sonunda iptal edilecek
+MONTHLY -> YEARLY geçiş sonraki dönemde uygulanacak
+```
+
+### 9.9 SubscriptionUsageCounter
 
 Kullanım limitlerini takip eder.
 
-| Alan | Tip | Açıklama |
-|---|---|---|
-| id | UUID | Primary key |
-| tenant_id | UUID | Tenant referansı |
-| subscription_id | UUID | Subscription referansı |
-| feature_key | VARCHAR | Kullanım anahtarı |
-| period | ENUM | DAILY, WEEKLY, MONTHLY, YEARLY |
-| period_start | TIMESTAMP | Kullanım dönemi başlangıcı |
-| period_end | TIMESTAMP | Kullanım dönemi bitişi |
-| used_value | DECIMAL | Kullanılan miktar |
-| limit_value | DECIMAL | Limit |
-| created_at | TIMESTAMP | Oluşturulma tarihi |
-| updated_at | TIMESTAMP | Güncellenme tarihi |
+```prisma
+model SubscriptionUsageCounter {
+  id String @id @default(cuid())
 
-Unique index önerisi:
+  tenantId       String
+  subscriptionId String
 
-```text
-tenant_id + feature_key + period_start + period_end
+  featureKey String
+  period     EntitlementPeriod
+
+  periodStart DateTime
+  periodEnd   DateTime
+
+  usedValue  Decimal @default(0) @db.Decimal(18, 4)
+  limitValue Decimal? @db.Decimal(18, 4)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  subscription Subscription @relation(fields: [subscriptionId], references: [id])
+
+  @@unique([tenantId, featureKey, periodStart, periodEnd])
+  @@index([tenantId])
+  @@index([subscriptionId])
+  @@index([featureKey])
+  @@map("SubscriptionUsageCounter")
+}
 ```
 
-Bu tablo AI, SMS, randevu, danışan sayısı gibi ölçülebilir limitler için kullanılmalıdır.
-
----
-
-### 6.9 usage_reservations
-
-Özellikle AI token gibi önce tahmini rezerve edilip sonra kesinleşen kullanımlar için tutulur.
-
-| Alan | Tip | Açıklama |
-|---|---|---|
-| id | UUID | Primary key |
-| tenant_id | UUID | Tenant referansı |
-| feature_key | VARCHAR | Kullanım anahtarı |
-| reserved_value | DECIMAL | Rezerve edilen miktar |
-| committed_value | DECIMAL | Kesinleşen miktar |
-| status | ENUM | RESERVED, COMMITTED, RELEASED, EXPIRED |
-| expires_at | TIMESTAMP | Rezervasyon süresi |
-| created_at | TIMESTAMP | Oluşturulma tarihi |
-| updated_at | TIMESTAMP | Güncellenme tarihi |
-
----
-
-### 6.10 invoices
-
-Fatura veya ödeme talebi kayıtlarını tutar.
-
-| Alan | Tip | Açıklama |
-|---|---|---|
-| id | UUID | Primary key |
-| tenant_id | UUID | Tenant referansı |
-| subscription_id | UUID | Subscription referansı |
-| invoice_no | VARCHAR | Fatura numarası |
-| status | ENUM | DRAFT, OPEN, PAID, VOID, FAILED |
-| currency | VARCHAR | Para birimi |
-| subtotal_amount | DECIMAL | Ara toplam |
-| tax_amount | DECIMAL | Vergi |
-| total_amount | DECIMAL | Toplam |
-| issued_at | TIMESTAMP | Oluşturulma tarihi |
-| due_at | TIMESTAMP | Son ödeme tarihi |
-| paid_at | TIMESTAMP | Ödeme tarihi |
-| provider_invoice_id | VARCHAR | Sağlayıcı fatura ID |
-| metadata | JSONB | Ek bilgiler |
-| created_at | TIMESTAMP | Oluşturulma tarihi |
-
----
-
-### 6.11 payments
-
-Ödeme hareketlerini tutar.
-
-| Alan | Tip | Açıklama |
-|---|---|---|
-| id | UUID | Primary key |
-| tenant_id | UUID | Tenant referansı |
-| invoice_id | UUID | Invoice referansı |
-| subscription_id | UUID | Subscription referansı |
-| provider | ENUM | IYZICO, STRIPE, MANUAL |
-| status | ENUM | PENDING, SUCCEEDED, FAILED, REFUNDED, CANCELED |
-| amount | DECIMAL | Tutar |
-| currency | VARCHAR | Para birimi |
-| provider_payment_id | VARCHAR | Sağlayıcı ödeme ID |
-| failure_code | VARCHAR | Hata kodu |
-| failure_message | TEXT | Hata mesajı |
-| paid_at | TIMESTAMP | Ödeme tarihi |
-| raw_response | JSONB | Sağlayıcı cevabı |
-| created_at | TIMESTAMP | Oluşturulma tarihi |
-
----
-
-### 6.12 payment_methods
-
-Kayıtlı ödeme yöntemlerini tutar.
-
-| Alan | Tip | Açıklama |
-|---|---|---|
-| id | UUID | Primary key |
-| billing_account_id | UUID | Billing account |
-| provider | ENUM | IYZICO, STRIPE |
-| provider_payment_method_id | VARCHAR | Sağlayıcı ödeme yöntemi ID |
-| type | ENUM | CARD, BANK_TRANSFER |
-| brand | VARCHAR | Kart markası |
-| last4 | VARCHAR | Son 4 hane |
-| exp_month | INT | Son kullanma ayı |
-| exp_year | INT | Son kullanma yılı |
-| is_default | BOOLEAN | Varsayılan mı |
-| created_at | TIMESTAMP | Oluşturulma tarihi |
-
-Kart bilgileri doğrudan sistemde saklanmamalıdır. Sadece provider token/reference bilgisi tutulmalıdır.
-
----
-
-### 6.13 subscription_events
-
-Subscription-service içinde audit/event geçmişi tutar.
-
-| Alan | Tip | Açıklama |
-|---|---|---|
-| id | UUID | Primary key |
-| tenant_id | UUID | Tenant referansı |
-| subscription_id | UUID | Subscription referansı |
-| event_type | VARCHAR | Event tipi |
-| payload | JSONB | Event içeriği |
-| source | VARCHAR | API, WEBHOOK, SYSTEM |
-| created_at | TIMESTAMP | Oluşturulma tarihi |
-
-Örnek event tipleri:
+Bu tablo şu tip limitler için kullanılır:
 
 ```text
-subscription.created
-subscription.activated
-subscription.trial.started
-subscription.payment_failed
-subscription.renewed
-subscription.plan_changed
-subscription.canceled
-subscription.expired
-usage.limit_exceeded
+ai.menu_generate.monthly_count
+ai.token.monthly_count
+notification.sms.monthly_count
+appointment.monthly_count
+diet_plan.monthly_count
+store.product.max_count
 ```
 
----
+### 9.10 SubscriptionUsageReservation
 
-### 6.14 webhook_events
+AI token gibi tahmini kullanım gerektiren alanlarda önce rezervasyon, sonra commit yapılmasını sağlar.
 
-Ödeme sağlayıcı webhook’larının idempotent işlenmesi için tutulur.
+```prisma
+model SubscriptionUsageReservation {
+  id String @id @default(cuid())
 
-| Alan | Tip | Açıklama |
-|---|---|---|
-| id | UUID | Primary key |
-| provider | ENUM | IYZICO, STRIPE |
-| provider_event_id | VARCHAR | Sağlayıcı event ID |
-| event_type | VARCHAR | Event tipi |
-| payload | JSONB | Ham webhook payload |
-| processed_at | TIMESTAMP | İşlenme tarihi |
-| status | ENUM | RECEIVED, PROCESSED, FAILED |
-| error_message | TEXT | Hata mesajı |
-| created_at | TIMESTAMP | Oluşturulma tarihi |
+  tenantId       String
+  subscriptionId String
 
-Unique index:
+  featureKey String
 
-```text
-provider + provider_event_id
+  reservedValue  Decimal @db.Decimal(18, 4)
+  committedValue Decimal? @db.Decimal(18, 4)
+
+  status UsageReservationStatus @default(RESERVED)
+
+  expiresAt DateTime
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+  @@index([subscriptionId])
+  @@index([featureKey])
+  @@index([status])
+  @@map("SubscriptionUsageReservation")
+}
 ```
 
-Bu yapı webhook’un iki kez gelmesi durumunda duplicate işlem yapılmasını engeller.
+### 9.11 SubscriptionEventLog
 
----
+Subscription-service içinde audit/event geçmişini tutar.
 
-## 7. Prisma Model Taslakları
+```prisma
+model SubscriptionEventLog {
+  id String @id @default(cuid())
+
+  tenantId       String?
+  subscriptionId String?
+
+  eventType String
+  source    String
+
+  payload Json
+
+  createdAt DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([subscriptionId])
+  @@index([eventType])
+  @@index([createdAt])
+  @@map("SubscriptionEventLog")
+}
+```
+
+Bu tablo Redis Stream eventlerinin kalıcı audit izini tutmak için kullanılabilir.
+
+### 9.12 Enumlar
 
 ```prisma
 enum SubscriptionStatus {
+  DRAFT
+  PAYMENT_PENDING
   TRIALING
   ACTIVE
   PAST_DUE
   CANCELED
   EXPIRED
   SUSPENDED
+  PAYMENT_FAILED
 }
 
 enum BillingPeriod {
@@ -678,10 +579,16 @@ enum BillingPeriod {
   YEARLY
 }
 
-enum FeatureValueType {
+enum BillingAccountType {
+  INDIVIDUAL
+  CLINIC
+}
+
+enum SubscriptionFeatureValueType {
   BOOLEAN
   NUMBER
   STRING
+  JSON
 }
 
 enum EntitlementPeriod {
@@ -692,357 +599,206 @@ enum EntitlementPeriod {
   YEARLY
 }
 
-enum PaymentProvider {
-  NONE
-  IYZICO
-  STRIPE
-  MANUAL
-}
-
-enum PaymentStatus {
+enum SubscriptionPaymentStatus {
+  REQUESTED
   PENDING
   SUCCEEDED
   FAILED
-  REFUNDED
   CANCELED
 }
 
-model Plan {
-  id          String   @id @default(uuid())
-  code        String   @unique
-  name        String
-  description String?
-  isActive    Boolean  @default(true)
-  sortOrder   Int      @default(0)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-
-  prices       PlanPrice[]
-  entitlements PlanEntitlement[]
-
-  @@map("plans")
+enum SubscriptionPaymentReason {
+  INITIAL_PURCHASE
+  RENEWAL
+  PLAN_UPGRADE
+  PLAN_DOWNGRADE
+  REACTIVATION
 }
 
-model PlanPrice {
-  id              String        @id @default(uuid())
-  planId          String
-  billingPeriod   BillingPeriod
-  currency        String
-  amount          Decimal       @db.Decimal(12, 2)
-  taxRate         Decimal       @default(0) @db.Decimal(5, 2)
-  isActive        Boolean       @default(true)
-  providerPriceId String?
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
-
-  plan Plan @relation(fields: [planId], references: [id])
-
-  @@index([planId])
-  @@map("plan_prices")
+enum SubscriptionChangeType {
+  PLAN_UPGRADE
+  PLAN_DOWNGRADE
+  BILLING_PERIOD_CHANGE
+  CANCEL_AT_PERIOD_END
+  REACTIVATE
 }
 
-model Feature {
-  id          String           @id @default(uuid())
-  key         String           @unique
-  name        String
-  description String?
-  valueType   FeatureValueType
-  createdAt   DateTime         @default(now())
-  updatedAt   DateTime         @updatedAt
-
-  entitlements PlanEntitlement[]
-
-  @@map("features")
+enum ScheduledChangeStatus {
+  PENDING
+  APPLIED
+  CANCELED
+  FAILED
 }
 
-model PlanEntitlement {
-  id         String            @id @default(uuid())
-  planId     String
-  featureId  String
-  isEnabled  Boolean           @default(true)
-  limitValue Decimal?          @db.Decimal(18, 4)
-  period     EntitlementPeriod @default(NONE)
-  metadata   Json?
-  createdAt  DateTime          @default(now())
-  updatedAt  DateTime          @updatedAt
-
-  plan    Plan    @relation(fields: [planId], references: [id])
-  feature Feature @relation(fields: [featureId], references: [id])
-
-  @@unique([planId, featureId])
-  @@map("plan_entitlements")
-}
-
-model BillingAccount {
-  id                 String   @id @default(uuid())
-  tenantId           String
-  ownerUserId         String
-  accountType         String
-  companyName         String?
-  taxNumber           String?
-  taxOffice           String?
-  billingEmail        String?
-  billingPhone        String?
-  billingAddress      String?
-  country             String?
-  city                String?
-  providerCustomerId  String?
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
-
-  subscriptions Subscription[]
-
-  @@index([tenantId])
-  @@index([ownerUserId])
-  @@map("billing_accounts")
-}
-
-model Subscription {
-  id                     String             @id @default(uuid())
-  tenantId               String
-  billingAccountId        String
-  planId                 String
-  status                 SubscriptionStatus
-  billingPeriod          BillingPeriod
-  currentPeriodStart     DateTime?
-  currentPeriodEnd       DateTime?
-  trialStart             DateTime?
-  trialEnd               DateTime?
-  cancelAtPeriodEnd      Boolean            @default(false)
-  canceledAt             DateTime?
-  provider               PaymentProvider    @default(NONE)
-  providerSubscriptionId String?
-  planSnapshot           Json?
-  createdAt              DateTime           @default(now())
-  updatedAt              DateTime           @updatedAt
-
-  billingAccount BillingAccount @relation(fields: [billingAccountId], references: [id])
-  plan           Plan           @relation(fields: [planId], references: [id])
-
-  usages UsageCounter[]
-  invoices Invoice[]
-
-  @@index([tenantId])
-  @@index([status])
-  @@map("subscriptions")
-}
-
-model UsageCounter {
-  id             String            @id @default(uuid())
-  tenantId       String
-  subscriptionId String
-  featureKey     String
-  period         EntitlementPeriod
-  periodStart    DateTime
-  periodEnd      DateTime
-  usedValue      Decimal           @default(0) @db.Decimal(18, 4)
-  limitValue     Decimal?          @db.Decimal(18, 4)
-  createdAt      DateTime          @default(now())
-  updatedAt      DateTime          @updatedAt
-
-  subscription Subscription @relation(fields: [subscriptionId], references: [id])
-
-  @@unique([tenantId, featureKey, periodStart, periodEnd])
-  @@index([tenantId])
-  @@index([featureKey])
-  @@map("usage_counters")
-}
-
-model Invoice {
-  id                String   @id @default(uuid())
-  tenantId          String
-  subscriptionId    String
-  invoiceNo         String?
-  status            String
-  currency          String
-  subtotalAmount    Decimal  @db.Decimal(12, 2)
-  taxAmount         Decimal  @db.Decimal(12, 2)
-  totalAmount       Decimal  @db.Decimal(12, 2)
-  issuedAt          DateTime?
-  dueAt             DateTime?
-  paidAt            DateTime?
-  providerInvoiceId String?
-  metadata          Json?
-  createdAt         DateTime @default(now())
-
-  subscription Subscription @relation(fields: [subscriptionId], references: [id])
-  payments     Payment[]
-
-  @@index([tenantId])
-  @@map("invoices")
-}
-
-model Payment {
-  id                String          @id @default(uuid())
-  tenantId          String
-  invoiceId         String?
-  subscriptionId    String
-  provider          PaymentProvider
-  status            PaymentStatus
-  amount            Decimal         @db.Decimal(12, 2)
-  currency          String
-  providerPaymentId String?
-  failureCode       String?
-  failureMessage    String?
-  paidAt            DateTime?
-  rawResponse       Json?
-  createdAt         DateTime        @default(now())
-
-  invoice Invoice? @relation(fields: [invoiceId], references: [id])
-
-  @@index([tenantId])
-  @@index([subscriptionId])
-  @@map("payments")
+enum UsageReservationStatus {
+  RESERVED
+  COMMITTED
+  RELEASED
+  EXPIRED
 }
 ```
 
----
+## 12. İş Akışları
 
-## 8. Kritik İş Akışları
-
-### 8.1 Yeni Diyetisyen Kaydı Sonrası Trial Başlatma
+### 12.1 Yeni Diyetisyen Kaydı Sonrası Trial Başlatma
 
 ```text
 1. user-service dietisyen hesabı oluşturur.
-2. user-service "user.created" eventi yayınlar.
+2. user-service user.created eventi yayınlar.
 3. subscription-service eventi dinler.
-4. tenantId veya userId için billing_account oluşturur.
-5. TRIAL plan subscription oluşturur.
-6. subscription.created ve subscription.trial.started eventi yayınlanır.
-7. user-service subscription projection tablosunu günceller.
+4. tenantId + ownerUserId için BillingProfileRef oluşturur.
+5. TRIAL plan bulunur.
+6. Subscription kaydı TRIALING olarak oluşturulur.
+7. Trial period set edilir.
+8. Plan entitlement snapshot oluşturulur.
+9. subscription.trial.started eventi yayınlanır.
 ```
 
-Event:
+Bu akışta payment-service çağrısı yapılmaz.
 
-```json
-{
-  "eventType": "subscription.trial.started",
-  "tenantId": "tenant-id",
-  "userId": "user-id",
-  "planCode": "TRIAL",
-  "status": "TRIALING",
-  "trialEnd": "2026-07-05T00:00:00.000Z"
-}
-```
 
----
 
-### 8.2 Plan Satın Alma
+### 12.2 Ücretli Plan Satın Alma
 
 ```text
-1. Kullanıcı frontend üzerinden plan seçer.
-2. Frontend subscription-service'e checkout isteği atar.
-3. subscription-service ödeme sağlayıcı üzerinde checkout/payment session oluşturur.
-4. Kullanıcı ödeme ekranına yönlendirilir.
-5. Ödeme sağlayıcı webhook gönderir.
-6. subscription-service webhook'u doğrular.
-7. Payment SUCCEEDED olarak kaydedilir.
-8. Invoice PAID olur.
-9. Subscription ACTIVE olur.
-10. subscription.activated eventi yayınlanır.
+1. Kullanıcı BASIC / PRO / CLINIC plan seçer.
+2. Frontend subscription-service /checkout endpointine istek atar.
+3. subscription-service DRAFT veya PAYMENT_PENDING subscription oluşturur.
+4. planSnapshot ve entitlementSnapshot hazırlanır.
+5. subscription-service payment-service'e ödeme order oluşturma isteği gönderir.
+6. payment-service ödeme sürecini başlatır.
+7. subscription-service SubscriptionPaymentRef kaydı oluşturur.
+8. Frontend ödeme URL veya 3DS yönlendirme bilgisini alır.
+9. payment-service ödeme sonucunu event olarak yayınlar.
+10. subscription-service payment eventini consume eder.
+11. Başarılı ödeme sonrası subscription ACTIVE yapılır.
 ```
 
----
-
-### 8.3 Plan Yükseltme
+### 12.3 Payment Succeeded Event Consume
 
 ```text
-1. Kullanıcı BASIC plandan PRO plana geçmek ister.
+1. payment.transaction.succeeded eventi alınır.
+2. relatedEntityType = SUBSCRIPTION kontrol edilir.
+3. relatedEntityId ile subscription bulunur.
+4. SubscriptionPaymentRef SUCCEEDED yapılır.
+5. Subscription status ACTIVE yapılır.
+6. currentPeriodStart ve currentPeriodEnd set edilir.
+7. subscription.activated eventi yayınlanır.
+8. Redis cache temizlenir.
+```
+
+### 12.4 Payment Failed Event Consume
+
+```text
+1. payment.transaction.failed eventi alınır.
+2. relatedEntityType = SUBSCRIPTION kontrol edilir.
+3. SubscriptionPaymentRef FAILED yapılır.
+4. Yeni satın alma ise subscription PAYMENT_FAILED yapılır.
+5. Yenileme ise subscription PAST_DUE yapılır.
+6. Grace period başlatılır.
+7. subscription.payment_failed eventi yayınlanır.
+8. notify-service için bildirim eventi publish edilir.
+```
+
+
+
+### 12.5 Plan Yükseltme
+
+```text
+1. Kullanıcı BASIC -> PRO geçmek ister.
 2. subscription-service mevcut subscription'ı bulur.
-3. Yeni planın fiyatı ve entitlement bilgileri alınır.
-4. Gerekirse ödeme farkı hesaplanır.
-5. Ödeme başarılı olursa subscription planId güncellenir.
-6. planSnapshot yenilenir.
-7. subscription.plan_changed eventi yayınlanır.
-8. Diğer servislerin cache/projection verileri güncellenir.
+3. Yeni plan ve fiyat bulunur.
+4. Fiyat farkı veya yeni dönem ücreti hesaplanır.
+5. payment-service'e PLAN_UPGRADE reason ile ödeme order isteği gönderilir.
+6. SubscriptionPaymentRef PENDING oluşturulur.
+7. payment-service success eventi gönderirse plan güncellenir.
+8. entitlementSnapshot yenilenir.
+9. subscription.plan_changed eventi yayınlanır.
 ```
 
-Plan yükseltmede kullanım limitleri yeniden hesaplanmalıdır.
+Plan yükseltme genellikle anında uygulanabilir.
 
-Örnek:
+
+### 12.6 Plan Düşürme
+
+MVP için önerilen yaklaşım: dönem sonunda düşürme.
 
 ```text
-BASIC AI limit: 20
-PRO AI limit: 100
-Mevcut kullanım: 15
-Yeni kalan hak: 85
+1. Kullanıcı PRO -> BASIC geçmek ister.
+2. SubscriptionScheduledChange oluşturulur.
+3. Mevcut plan currentPeriodEnd tarihine kadar devam eder.
+4. Dönem sonunda scheduler pending change'i uygular.
+5. subscription.plan_changed eventi yayınlanır.
 ```
 
----
+Bu akışta ödeme alınmayabilir. Gerekirse yeni dönem yenilemesinde payment-service devreye girer.
 
-### 8.4 Plan Düşürme
 
-Plan düşürme iki şekilde yapılabilir:
-
-#### Seçenek 1: Hemen düşürme
-
-Anında plan değişir. Kullanıcı bazı özellikleri hemen kaybeder.
-
-#### Seçenek 2: Dönem sonunda düşürme
-
-Mevcut dönem bitene kadar eski plan devam eder. Dönem sonunda yeni plan aktif olur.
-
-MVP için önerilen yöntem:
-
-```text
-Dönem sonunda düşürme
-```
-
-Bunun için subscription üzerinde şu alanlar eklenebilir:
-
-```text
-next_plan_id
-next_billing_period
-scheduled_change_at
-```
-
----
-
-### 8.5 Abonelik İptali
+### 12.7 Abonelik İptali
 
 ```text
 1. Kullanıcı aboneliği iptal eder.
 2. cancelAtPeriodEnd = true yapılır.
-3. Kullanıcı dönem sonuna kadar planı kullanmaya devam eder.
-4. Dönem sonunda subscription CANCELED veya EXPIRED olur.
-5. subscription.canceled eventi yayınlanır.
+3. SubscriptionScheduledChange CANCEL_AT_PERIOD_END oluşturulur.
+4. Kullanıcı currentPeriodEnd tarihine kadar aktif kullanır.
+5. Dönem sonunda subscription CANCELED veya EXPIRED yapılır.
+6. subscription.canceled eventi yayınlanır.
 ```
 
----
-
-### 8.6 Ödeme Başarısızlığı
+### 12.8 Renew / Yenileme Akışı
 
 ```text
-1. Ödeme sağlayıcı payment_failed webhook gönderir.
-2. Payment FAILED kaydedilir.
-3. Subscription PAST_DUE yapılır.
-4. Kullanıcıya notify-service üzerinden bildirim gönderilir.
-5. Belirli grace period sonunda ödeme yapılmazsa subscription SUSPENDED olur.
+1. Scheduler currentPeriodEnd yaklaşan abonelikleri bulur.
+2. subscription-service payment-service'e RENEWAL reason ile payment order oluşturma isteği gönderir.
+3. payment-service tahsilat sürecini yönetir.
+4. payment succeeded event gelirse currentPeriodStart/currentPeriodEnd yenilenir.
+5. payment failed event gelirse subscription PAST_DUE olur.
+6. Grace period sonunda ödeme yoksa SUSPENDED veya EXPIRED yapılır.
 ```
 
-Önerilen grace period:
+## 13. Feature ve Limit Kontrol Akışı
+
+### 13.1 Check Feature
 
 ```text
-3 gün veya 7 gün
+1. Servis subscription-service'e tenantId + featureKey ile istek atar.
+2. Aktif subscription bulunur.
+3. entitlementSnapshot veya PlanEntitlement üzerinden feature bulunur.
+4. isEnabled kontrol edilir.
+5. Boolean response döner.
 ```
 
----
+Örnek request:
 
-### 8.7 Feature Kontrol Akışı
+```json
+{
+  "tenantId": "tenant-id",
+  "featureKey": "video_call.enabled"
+}
+```
 
-Örnek: AI menü oluşturma.
+Örnek response:
+
+```json
+{
+  "allowed": true,
+  "featureKey": "video_call.enabled",
+  "source": "SUBSCRIPTION"
+}
+```
+
+### 13.2 Check Limit
 
 ```text
-1. ai-service request alır.
-2. ai-service subscription-service'e entitlement kontrolü yapar.
-3. subscription-service aktif subscription'ı bulur.
-4. Plan entitlement bilgisini kontrol eder.
-5. Usage limitini kontrol eder.
-6. Uygunsa izin verir.
-7. AI işlemi tamamlanınca usage artırılır.
+1. Servis tenantId + featureKey ile limit kontrolü ister.
+2. Aktif subscription bulunur.
+3. Entitlement limit değeri alınır.
+4. Dönemsel usage counter bulunur.
+5. remaining hesaplanır.
+6. allowed bilgisi döner.
 ```
 
-Response örneği:
+Örnek response:
 
 ```json
 {
@@ -1055,43 +811,56 @@ Response örneği:
 }
 ```
 
-Limit aşılırsa:
+### 13.3 Increment Usage
 
-```json
-{
-  "allowed": false,
-  "reason": "LIMIT_EXCEEDED",
-  "featureKey": "ai.menu_generate.monthly_count",
-  "limit": 100,
-  "used": 100,
-  "remaining": 0
-}
+```text
+1. Servis başarılı işlem sonrası usage artırma isteği gönderir.
+2. subscription-service ilgili period counter'ı bulur veya oluşturur.
+3. Transaction içinde usedValue artırılır.
+4. Limit aşımı varsa hata döner veya soft limit event publish edilir.
 ```
 
----
+### 13.4 Reserve / Commit Usage
 
-## 9. API Tasarımı
+AI token kullanımı gibi tahmini kullanım senaryolarında önerilir.
 
-### 9.1 Public API
+```text
+1. ai-service ReserveUsage çağırır.
+2. subscription-service limit kontrolü yapar ve rezervasyon oluşturur.
+3. AI işlemi tamamlanır.
+4. ai-service CommitUsage çağırır.
+5. Gerçek token değeri usage counter'a işlenir.
+6. Hata olursa ReleaseUsage çağrılır.
+```
 
-Frontend tarafından kullanılacak endpointler.
+## 14. API Tasarımı
+
+### 14.1 Public / Frontend API
 
 ```text
 GET    /subscription/current
 GET    /subscription/plans
 POST   /subscription/checkout
-POST   /subscription/cancel
 POST   /subscription/change-plan
+POST   /subscription/cancel
+POST   /subscription/reactivate
 GET    /subscription/usage
-GET    /subscription/invoices
-GET    /subscription/payments
+GET    /subscription/scheduled-changes
 ```
 
----
+Not:
 
-### 9.2 Internal API
+```text
+/subscription/invoices
+/subscription/payments
+/subscription/payment-methods
+```
 
-Servisler arası kullanılacak endpointler.
+endpointleri subscription-service içinde olmamalıdır. Bu bilgiler payment-service üzerinden sağlanmalıdır.
+
+
+
+### 14.2 Internal API
 
 ```text
 POST /internal/subscription/check-feature
@@ -1101,83 +870,110 @@ POST /internal/subscription/reserve-usage
 POST /internal/subscription/commit-usage
 POST /internal/subscription/release-usage
 GET  /internal/subscription/summary/:tenantId
+POST /internal/subscription/payment-events
 ```
 
----
+Payment eventleri mümkünse HTTP callback yerine Redis Streams üzerinden consume edilmelidir.
 
-### 9.3 Admin API
-
-Panel/admin kullanımı için.
+### 14.3 Admin API
 
 ```text
-POST   /admin/plans
-PUT    /admin/plans/:id
-POST   /admin/features
-POST   /admin/plan-entitlements
-GET    /admin/subscriptions
-POST   /admin/subscriptions/:id/suspend
-POST   /admin/subscriptions/:id/reactivate
+GET    /admin/subscription/plans
+POST   /admin/subscription/plans
+PATCH  /admin/subscription/plans/:id
+
+GET    /admin/subscription/plan-prices
+POST   /admin/subscription/plan-prices
+PATCH  /admin/subscription/plan-prices/:id
+
+GET    /admin/subscription/features
+POST   /admin/subscription/features/sync
+
+GET    /admin/subscription/entitlements
+POST   /admin/subscription/entitlements
+PATCH  /admin/subscription/entitlements/:id
+
+GET    /admin/subscription/subscriptions
+GET    /admin/subscription/subscriptions/:id
+POST   /admin/subscription/subscriptions/:id/suspend
+POST   /admin/subscription/subscriptions/:id/reactivate
+POST   /admin/subscription/subscriptions/:id/cancel
 ```
 
----
+## 15. Event Tasarımı
 
-## 10. Event Tasarımı
+### 15.1 Producer Eventler
 
-Redis Streams üzerinden event publish edilebilir.
 
-Önerilen stream isimleri:
-
+Stream Name:
 ```text
 subscription.events
-usage.events
-billing.events
 ```
 
-Örnek eventler:
+Event tipleri:
 
 ```text
 subscription.created
 subscription.trial.started
+subscription.payment_pending
 subscription.activated
+subscription.payment_failed
 subscription.renewed
+subscription.plan_change_requested
 subscription.plan_changed
+subscription.cancel_requested
 subscription.canceled
 subscription.expired
 subscription.suspended
-payment.succeeded
-payment.failed
-usage.limit_exceeded
+subscription.reactivated
+subscription.usage.limit_exceeded
+subscription.usage.updated
 ```
 
-Örnek event payload:
+### 15.2 Consume Eventler
 
-```json
-{
-  "eventId": "uuid",
-  "eventType": "subscription.activated",
-  "occurredAt": "2026-06-05T12:00:00.000Z",
-  "tenantId": "tenant-id",
-  "userId": "user-id",
-  "subscriptionId": "subscription-id",
-  "planCode": "PRO",
-  "status": "ACTIVE",
-  "currentPeriodStart": "2026-06-05T12:00:00.000Z",
-  "currentPeriodEnd": "2026-07-05T12:00:00.000Z"
-}
+#### ● user-service eventleri
+
+```text
+user.created
+tenant.created
+clinic.created
+user.deleted
+tenant.deleted
 ```
 
----
+#### ● app-service eventleri
 
-## 11. Cache Stratejisi
+```text
+app.feature.created
+app.feature.updated
+app.feature.disabled
+```
 
-Subscription kontrolü sık yapılacağı için cache gereklidir.
+#### ● payment-service eventleri
 
-Önerilen Redis key yapısı:
+```text
+payment.order.created
+payment.transaction.succeeded
+payment.transaction.failed
+payment.transaction.canceled
+payment.transaction.expired
+payment.refund.succeeded
+```
+
+`payment.refund.succeeded` event’i abonelik iptali anlamına gelmez. Sadece ödeme tarafında iade olduğunu bildirir. Subscription-service bu event’e göre gerekirse abonelik durumunu admin policy doğrultusunda güncelleyebilir.
+
+## 16. Cache Stratejisi
+
+Subscription kontrolü sık yapılacağı için Redis cache kullanılmalıdır.
+
+Önerilen key yapısı:
 
 ```text
 subscription:summary:{tenantId}
 subscription:entitlements:{tenantId}
 subscription:usage:{tenantId}:{featureKey}:{period}
+subscription:feature-ref:{featureKey}
 ```
 
 TTL önerisi:
@@ -1186,73 +982,141 @@ TTL önerisi:
 summary: 5-15 dakika
 entitlements: 5-15 dakika
 usage: 1-5 dakika
+feature-ref: 15-60 dakika
 ```
 
-Plan değişikliği, ödeme başarısı, iptal veya suspend durumunda cache temizlenmelidir.
+Cache invalidation:
 
----
+- subscription activated
+- subscription plan changed
+- subscription canceled
+- subscription suspended
+- entitlement changed
+- app feature updated
+- usage increment
+- payment succeeded / failed event consumed
 
-## 12. Transaction ve Idempotency
 
-Aşağıdaki işlemler transaction içinde yapılmalıdır:
 
-- Payment success sonrası invoice/payment/subscription güncelleme
+## 17. Transaction ve Idempotency
+
+Transaction içinde yapılması gereken işlemler:
+
+- Subscription oluşturma
+- SubscriptionPaymentRef oluşturma
+- Payment succeeded event consume
+- Payment failed event consume
+- Plan change apply
+- Scheduled change apply
 - Usage increment
-- Reservation commit/release
-- Plan change
-- Subscription cancellation
-- Webhook processing
+- Usage reservation commit/release
+- Subscription cancel
+- Subscription suspend/reactivate
 
-Webhook işlemlerinde idempotency zorunludur.
+Idempotency kuralları:
 
-Örnek:
+- Checkout için `subscriptionId + planId + billingPeriod + period` bazlı idempotency key kullanılmalıdır.
+- Payment event consume edilirken `eventId` veya `paymentTransactionId` tekrar işlenmemelidir.
+- Aynı subscription için aynı anda birden fazla aktif plan change olmamalıdır.
+- Usage increment için gerekirse caller idempotency key kabul edilmelidir.
+
+## 18. Diğer Servislerle Entegrasyon
+
+### 18.1 auth-service
+
+Auth-service kimlik doğrulama ve token üretiminden sorumludur.
+Subscription-service auth-service tablosuna FK vermez.
+JWT içine subscription summary eklenebilir:
+
+```json
+{
+  "tenantId": "tenant-id",
+  "subscriptionPlan": "PRO",
+  "subscriptionStatus": "ACTIVE"
+}
+```
+
+Ancak kritik kontrollerde subscription-service kaynak kabul edilmelidir.
+
+
+### 18.2 user-service
+
+User-service tenant, clinic, user ve role bilgisinin sahibidir.
+
+Subscription-service bu servisle şu ID’ler üzerinden ilişki kurar:
 
 ```text
-provider + provider_event_id unique olmalı.
-Aynı webhook tekrar gelirse işlem tekrar yapılmamalı.
+tenantId
+ownerUserId
+clinicId
 ```
 
----
+User/tenant oluşturulduğunda trial abonelik başlatılabilir.
 
-## 13. MVP İçin Önerilen Kapsam
+### 18.3 app-service
 
-MVP aşamasında sistemi fazla karmaşıklaştırmadan şu yapı kurulmalıdır:
+App-service feature katalog ve feature flag/config bilgisinin sahibidir.
+Subscription-service app-service’den feature referanslarını alır ve `SubscriptionFeatureRef` içinde projection olarak tutar.
+Subscription-service feature flag yönetmez.
 
-### MVP’de olmalı
+### 18.4 payment-service
 
-- Plan tablosu
-- Plan fiyat tablosu
-- Feature tablosu
-- Plan entitlement tablosu
-- Billing account tablosu
-- Subscription tablosu
-- Usage counter tablosu
-- Payment tablosu
-- Invoice tablosu
-- Subscription current endpoint
-- Check feature endpoint
-- Check limit endpoint
-- Increment usage endpoint
-- Trial başlatma
-- Manual payment veya provider-ready payment altyapısı
-- Redis event publish
+Payment-service ödeme ve fatura domain’inin sahibidir.
+Subscription-service ödeme başlatmak için payment-service çağırır.
+Payment sonucu event üzerinden subscription-service’e yansır.
+Subscription-service invoice, transaction, refund veya card token tutmaz.
 
-### MVP sonrası eklenebilir
+### 18.5 appointment-service
 
-- Add-on paketleri
-- Usage reservation
-- Gelişmiş invoice sistemi
-- Kupon/indirim sistemi
-- Vergi entegrasyonu
-- Otomatik fatura sağlayıcı entegrasyonu
-- Çoklu ödeme sağlayıcı routing
-- Enterprise özel sözleşme yönetimi
+Appointment-service randevu oluşturmadan önce limit kontrolü yapar:
 
----
+```text
+check-feature: appointment.enabled
+check-limit: appointment.monthly_count
+increment-usage: appointment.monthly_count
+```
 
-## 14. Önerilen Plan Feature Seti
+### 18.6 chat-service
 
-### FREE
+Chat-service chat ve video görüşme için kontrol yapar:
+
+```text
+check-feature: chat.enabled
+check-feature: video_call.enabled
+check-limit: chat.monthly_message_count
+```
+
+### 18.7 ai-service
+
+AI-service maliyetli işlemler için subscription-service’i kullanır:
+
+```text
+check-limit: ai.token.monthly_count
+reserve-usage: ai.token.monthly_count
+commit-usage: ai.token.monthly_count
+```
+
+### 18.8 notify-service
+
+Notify-service SMS gibi ücretli bildirimlerde limit kontrolü yapabilir:
+
+```text
+check-limit: notification.sms.monthly_count
+increment-usage: notification.sms.monthly_count
+```
+
+### 18.9 store-service
+
+Store-service store modülü ve ürün limiti için kontrol yapar:
+
+```text
+check-feature: store.enabled
+check-limit: store.product.max_count
+```
+
+## 19. Plan Feature Seti
+
+### Free Plan
 
 ```text
 client.max_count = 3
@@ -1260,11 +1124,12 @@ appointment.monthly_count = 10
 chat.enabled = false
 video_call.enabled = false
 ai.menu_generate.monthly_count = 0
+ai.token.monthly_count = 0
 pdf_export.enabled = false
 store.enabled = false
 ```
 
-### BASIC
+### Basic Plan
 
 ```text
 client.max_count = 25
@@ -1272,12 +1137,13 @@ appointment.monthly_count = 100
 chat.enabled = true
 video_call.enabled = false
 ai.menu_generate.monthly_count = 20
+ai.token.monthly_count = 50000
 pdf_export.enabled = true
 store.enabled = false
 notification.sms.monthly_count = 0
 ```
 
-### PRO
+### Pro Plan
 
 ```text
 client.max_count = 100
@@ -1308,11 +1174,7 @@ staff.max_count = 10
 notification.sms.monthly_count = 500
 ```
 
----
-
-## 15. Servis İç Mimari Önerisi
-
-Dosya yapısı mevcut TheFoodHero mimarisine uyumlu olacak şekilde şöyle olabilir:
+## 20. Servis İç Mimari Önerisi
 
 ```text
 services/subscription-service
@@ -1321,30 +1183,47 @@ services/subscription-service
       useCases
         createTrialSubscription
         getCurrentSubscription
+        createCheckoutSubscription
+        handlePaymentSucceeded
+        handlePaymentFailed
+        changePlan
+        schedulePlanDowngrade
+        cancelSubscription
+        reactivateSubscription
         checkFeatureAccess
         checkUsageLimit
         incrementUsage
-        changePlan
-        cancelSubscription
-        handlePaymentWebhook
+        reserveUsage
+        commitUsage
+        releaseUsage
+        syncFeatureFromAppService
+
       services
         SubscriptionDomainService.ts
-        UsageDomainService.ts
-        BillingDomainService.ts
+        PlanDomainService.ts
         EntitlementService.ts
+        UsageDomainService.ts
+        SubscriptionPaymentCoordinator.ts
+        SubscriptionPeriodService.ts
+        FeatureRefSyncService.ts
 
     domain
       entities
         Plan.ts
+        PlanPrice.ts
         Subscription.ts
-        Feature.ts
-        UsageCounter.ts
+        SubscriptionFeatureRef.ts
+        PlanEntitlement.ts
+        SubscriptionPaymentRef.ts
+        SubscriptionUsageCounter.ts
       enums
         SubscriptionStatus.ts
         BillingPeriod.ts
-        PaymentStatus.ts
+        EntitlementPeriod.ts
       rules
         SubscriptionRules.ts
+        PlanChangeRules.ts
+        UsageRules.ts
 
     infrastructure
       db
@@ -1352,75 +1231,38 @@ services/subscription-service
           schema.prisma
         repositories
           PlanRepository.ts
+          PlanPriceRepository.ts
           SubscriptionRepository.ts
+          EntitlementRepository.ts
           UsageRepository.ts
-      payment
-        PaymentProvider.ts
-        IyzicoPaymentProvider.ts
-        StripePaymentProvider.ts
-        ManualPaymentProvider.ts
+          PaymentRefRepository.ts
+          FeatureRefRepository.ts
+
+      clients
+        PaymentServiceClient.ts
+        AppServiceClient.ts
+
       events
         SubscriptionEventPublisher.ts
-        SubscriptionEventConsumer.ts
+        PaymentEventConsumer.ts
+        AppFeatureEventConsumer.ts
+        UserEventConsumer.ts
+
       cache
         SubscriptionCacheService.ts
+        EntitlementCacheService.ts
+        UsageCacheService.ts
 
     interfaces
       http
         controllers
           SubscriptionController.ts
           InternalSubscriptionController.ts
-          AdminPlanController.ts
+          AdminSubscriptionController.ts
         routes
-          subscriptionRoutes.ts
+          publicRoutes.ts
           internalRoutes.ts
           adminRoutes.ts
 
     server.ts
 ```
-
----
-
-## 16. En Önemli Tasarım Kararları
-
-1. Subscription-service kendi veritabanına sahip olmalıdır.
-2. Diğer servislerin tablolarına foreign key verilmemelidir.
-3. Plan ve entitlement yapısı dinamik olmalıdır.
-4. Limitler hard-code edilmemelidir.
-5. Kritik kontroller subscription-service üzerinden yapılmalıdır.
-6. Çok sık yapılan kontroller Redis cache ile hızlandırılmalıdır.
-7. AI ve SMS gibi maliyetli işlemlerde usage takibi zorunlu olmalıdır.
-8. Ödeme sağlayıcı webhook’ları idempotent işlenmelidir.
-9. Plan değişikliğinde event publish edilmelidir.
-10. JWT içine subscription özeti konabilir ama kaynak veri subscription-service olmalıdır.
-11. `plan_snapshot` tutulmalıdır.
-12. MVP’de add-on, kupon ve gelişmiş fatura sistemi ertelenebilir.
-
----
-
-## 17. Önerilen İlk Geliştirme Sırası
-
-1. Prisma schema oluştur
-2. Plan, feature ve entitlement seed datalarını ekle
-3. Trial subscription oluşturma use-case’i yaz
-4. Current subscription endpointini yaz
-5. Internal check-feature endpointini yaz
-6. Internal check-limit endpointini yaz
-7. Usage increment endpointini yaz
-8. Redis cache ekle
-9. Redis stream event publisher ekle
-10. user-service ile `user.created` event entegrasyonu yap
-11. ai-service ve appointment-service için limit kontrol entegrasyonu yap
-12. Payment provider abstraction ekle
-13. Webhook idempotency altyapısını kur
-14. Plan change ve cancel akışlarını ekle
-
----
-
-## 18. Sonuç
-
-Subscription-service, TheFoodHero ekosisteminde sadece ödeme takibi yapan bir servis olmamalıdır. Asıl görevi, platformdaki ticari paketleme modelini teknik olarak uygulanabilir hale getirmektir.
-
-Bu nedenle servis; plan, entitlement, usage, payment, invoice ve subscription state yönetimini merkezi olarak ele almalıdır. Diğer servisler kendi işlerini yaparken subscription-service’den yetki ve limit kontrolü almalıdır.
-
-Bu yapı sayesinde TheFoodHero ileride yeni paketler, AI limitleri, SMS hakları, clinic özellikleri, store modülü ve enterprise anlaşmalarını mevcut mimariyi bozmadan yönetebilir.
