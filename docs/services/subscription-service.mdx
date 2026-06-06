@@ -15,8 +15,6 @@
 - Diğer servislere subscription summary, feature access ve limit kontrolü sağlama
 - Event-driven mimariyle abonelik durum değişikliklerinin yayılması
 
-
-
 ## 2. Servisin sorumlulukları
 
 `subscription-service` aşağıdaki işlerden sorumludur:
@@ -38,7 +36,6 @@
 - Subscription event publish etme
 - Payment-service eventlerini consume ederek abonelik state güncelleme
 
-
 ## 3. Servisin Konumu
 
 ```text
@@ -58,7 +55,7 @@ API Gateway
         +--> notify-service
 ```
 
-## 7. Servis Modeli
+## 4. Servis Modeli
 
 - `Plan`
 - `PlanPrice`
@@ -72,9 +69,9 @@ API Gateway
 - `SubscriptionEventLog`
 - `SubscriptionPaymentRef`
 
-## 9. Veritabanı Tasarımı
+## 5. Veritabanı Tasarımı
 
-### 9.1 Plan
+### 5.1 Plan
 
 Plan şablonlarını tutar.
 
@@ -111,9 +108,7 @@ ENTERPRISE
 
 Plan doğrudan abonelik değildir. Plan sadece abonelik oluşturulurken kullanılan ticari şablondur.
 
-
-
-### 9.2 PlanPrice
+### 5.2 PlanPrice
 
 Plan fiyat bilgisini tutar. Gerçek tahsilat payment-service tarafından yapılır.
 
@@ -125,7 +120,7 @@ model PlanPrice {
   planId        String
   billingPeriod BillingPeriod
   currency      String        @default("TRY")
-  amount        Decimal       @db.Decimal(18, 2)
+  amount        Decimal       @db.Decimal(12. 2)
   taxRate       Decimal       @default(0) @db.Decimal(5, 2)
   isActive      Boolean       @default(true)
 
@@ -147,9 +142,7 @@ model PlanPrice {
 
 Bu alanlar provider referansı değil, payment-service referansıdır.
 
-
-
-### 9.3 SubscriptionFeatureRef
+### 5.3 SubscriptionFeatureRef
 
 App-service içindeki feature tanımlarının subscription-service projection karşılığıdır.
 
@@ -189,9 +182,7 @@ app.feature.disabled
 
 Subscription-service bu eventleri consume ederek `SubscriptionFeatureRef` tablosunu günceller.
 
-
-
-### 9.4 PlanEntitlement
+### 5.4 PlanEntitlement
 
 Planın hangi feature’ı hangi limitlerle sunduğunu belirtir.
 
@@ -202,7 +193,7 @@ model PlanEntitlement {
   featureId String
 
   isEnabled  Boolean @default(true)
-  limitValue Decimal? @db.Decimal(18, 4)
+  limitValue Decimal? @db.Decimal(12. 4)
   period     EntitlementPeriod @default(NONE)
   metadata   Json?
 
@@ -227,7 +218,7 @@ BASIC -> video_call.enabled -> false -> NONE
 CLINIC -> staff.max_count -> enabled -> 10 -> NONE
 ```
 
-### 9.5 BillingProfileRef
+### 5.5 BillingProfileRef
 
 Fatura kesme ve finansal bilgi payment-service tarafında tutulur. Subscription-service sadece aboneliğin hangi tenant/user/clinic adına yürüdüğünü bilmelidir.
 
@@ -260,7 +251,7 @@ Bu tablo fatura adresi, vergi numarası veya ödeme yöntemi tutmaz.
 Bu bilgiler payment-service domain’indedir.
 Buradaki amaç sadece subscription bağlamını temsil etmektir.
 
-### 9.6 Subscription
+### 5.6 Subscription
 
 Abonelik lifecycle merkez modelidir.
 
@@ -355,9 +346,7 @@ Abonelik başladığı anda plan haklarını snapshot olarak tutar.
 
 Bu snapshot, plan sonradan değişse bile mevcut aboneliğin hangi koşullarla başladığını izlemeyi sağlar.
 
-
-
-### 9.7 SubscriptionPaymentRef
+### 5.7 SubscriptionPaymentRef
 
 Subscription-service payment transaction tutmaz. Ancak payment-service ile ilişki kurabilmek için minimal ödeme referansı tutar.
 
@@ -372,7 +361,7 @@ model SubscriptionPaymentRef {
   paymentTransactionId String?
   paymentStatus        SubscriptionPaymentStatus
 
-  amount   Decimal? @db.Decimal(18, 2)
+  amount   Decimal? @db.Decimal(12. 2)
   currency String?
 
   reason SubscriptionPaymentReason
@@ -410,7 +399,7 @@ Plan değişikliği için ödeme bekleniyor mu?
 Başarısız ödeme sonrası subscription PAST_DUE mu?
 ```
 
-### 9.8 SubscriptionScheduledChange
+### 5.8 SubscriptionScheduledChange
 
 Plan düşürme, dönem sonunda iptal veya dönem sonunda plan değiştirme gibi ileri tarihli subscription değişikliklerini tutar.
 
@@ -456,7 +445,7 @@ Abonelik dönem sonunda iptal edilecek
 MONTHLY -> YEARLY geçiş sonraki dönemde uygulanacak
 ```
 
-### 9.9 SubscriptionUsageCounter
+### 5.9 SubscriptionUsageCounter
 
 Kullanım limitlerini takip eder.
 
@@ -473,8 +462,8 @@ model SubscriptionUsageCounter {
   periodStart DateTime
   periodEnd   DateTime
 
-  usedValue  Decimal @default(0) @db.Decimal(18, 4)
-  limitValue Decimal? @db.Decimal(18, 4)
+  usedValue  Decimal @default(0) @db.Decimal(12. 4)
+  limitValue Decimal? @db.Decimal(12. 4)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -500,7 +489,7 @@ diet_plan.monthly_count
 store.product.max_count
 ```
 
-### 9.10 SubscriptionUsageReservation
+### 5.10 SubscriptionUsageReservation
 
 AI token gibi tahmini kullanım gerektiren alanlarda önce rezervasyon, sonra commit yapılmasını sağlar.
 
@@ -513,8 +502,8 @@ model SubscriptionUsageReservation {
 
   featureKey String
 
-  reservedValue  Decimal @db.Decimal(18, 4)
-  committedValue Decimal? @db.Decimal(18, 4)
+  reservedValue  Decimal @db.Decimal(12. 4)
+  committedValue Decimal? @db.Decimal(12. 4)
 
   status UsageReservationStatus @default(RESERVED)
 
@@ -531,7 +520,7 @@ model SubscriptionUsageReservation {
 }
 ```
 
-### 9.11 SubscriptionEventLog
+### 5.11 SubscriptionEventLog
 
 Subscription-service içinde audit/event geçmişini tutar.
 
@@ -559,7 +548,7 @@ model SubscriptionEventLog {
 
 Bu tablo Redis Stream eventlerinin kalıcı audit izini tutmak için kullanılabilir.
 
-### 9.12 Enumlar
+### 5.12 Enumlar
 
 ```prisma
 enum SubscriptionStatus {
@@ -638,9 +627,9 @@ enum UsageReservationStatus {
 }
 ```
 
-## 12. İş Akışları
+## 6. İş Akışları
 
-### 12.1 Yeni Diyetisyen Kaydı Sonrası Trial Başlatma
+### 6.1 Yeni Diyetisyen Kaydı Sonrası Trial Başlatma
 
 ```text
 1. user-service dietisyen hesabı oluşturur.
@@ -656,9 +645,7 @@ enum UsageReservationStatus {
 
 Bu akışta payment-service çağrısı yapılmaz.
 
-
-
-### 12.2 Ücretli Plan Satın Alma
+### 6.2 Ücretli Plan Satın Alma
 
 ```text
 1. Kullanıcı BASIC / PRO / CLINIC plan seçer.
@@ -674,7 +661,7 @@ Bu akışta payment-service çağrısı yapılmaz.
 11. Başarılı ödeme sonrası subscription ACTIVE yapılır.
 ```
 
-### 12.3 Payment Succeeded Event Consume
+### 6.3 Payment Succeeded Event Consume
 
 ```text
 1. payment.transaction.succeeded eventi alınır.
@@ -687,7 +674,7 @@ Bu akışta payment-service çağrısı yapılmaz.
 8. Redis cache temizlenir.
 ```
 
-### 12.4 Payment Failed Event Consume
+### 6.4 Payment Failed Event Consume
 
 ```text
 1. payment.transaction.failed eventi alınır.
@@ -700,9 +687,7 @@ Bu akışta payment-service çağrısı yapılmaz.
 8. notify-service için bildirim eventi publish edilir.
 ```
 
-
-
-### 12.5 Plan Yükseltme
+### 6.5 Plan Yükseltme
 
 ```text
 1. Kullanıcı BASIC -> PRO geçmek ister.
@@ -718,8 +703,7 @@ Bu akışta payment-service çağrısı yapılmaz.
 
 Plan yükseltme genellikle anında uygulanabilir.
 
-
-### 12.6 Plan Düşürme
+### 6.6 Plan Düşürme
 
 MVP için önerilen yaklaşım: dönem sonunda düşürme.
 
@@ -733,8 +717,7 @@ MVP için önerilen yaklaşım: dönem sonunda düşürme.
 
 Bu akışta ödeme alınmayabilir. Gerekirse yeni dönem yenilemesinde payment-service devreye girer.
 
-
-### 12.7 Abonelik İptali
+### 6.7 Abonelik İptali
 
 ```text
 1. Kullanıcı aboneliği iptal eder.
@@ -745,7 +728,7 @@ Bu akışta ödeme alınmayabilir. Gerekirse yeni dönem yenilemesinde payment-s
 6. subscription.canceled eventi yayınlanır.
 ```
 
-### 12.8 Renew / Yenileme Akışı
+### 6.8 Renew / Yenileme Akışı
 
 ```text
 1. Scheduler currentPeriodEnd yaklaşan abonelikleri bulur.
@@ -756,9 +739,9 @@ Bu akışta ödeme alınmayabilir. Gerekirse yeni dönem yenilemesinde payment-s
 6. Grace period sonunda ödeme yoksa SUSPENDED veya EXPIRED yapılır.
 ```
 
-## 13. Feature ve Limit Kontrol Akışı
+## 7. Feature ve Limit Kontrol Akışı
 
-### 13.1 Check Feature
+### 7.1 Check Feature
 
 ```text
 1. Servis subscription-service'e tenantId + featureKey ile istek atar.
@@ -787,7 +770,7 @@ Bu akışta ödeme alınmayabilir. Gerekirse yeni dönem yenilemesinde payment-s
 }
 ```
 
-### 13.2 Check Limit
+### 7.2 Check Limit
 
 ```text
 1. Servis tenantId + featureKey ile limit kontrolü ister.
@@ -807,11 +790,11 @@ Bu akışta ödeme alınmayabilir. Gerekirse yeni dönem yenilemesinde payment-s
   "limit": 100,
   "used": 25,
   "remaining": 75,
-  "periodEnd": "2026-06-30T23:59:59.000Z"
+  "periodEnd": "14.6-06-30T23:59:59.000Z"
 }
 ```
 
-### 13.3 Increment Usage
+### 7.3 Increment Usage
 
 ```text
 1. Servis başarılı işlem sonrası usage artırma isteği gönderir.
@@ -820,7 +803,7 @@ Bu akışta ödeme alınmayabilir. Gerekirse yeni dönem yenilemesinde payment-s
 4. Limit aşımı varsa hata döner veya soft limit event publish edilir.
 ```
 
-### 13.4 Reserve / Commit Usage
+### 7.4 Reserve / Commit Usage
 
 AI token kullanımı gibi tahmini kullanım senaryolarında önerilir.
 
@@ -833,9 +816,9 @@ AI token kullanımı gibi tahmini kullanım senaryolarında önerilir.
 6. Hata olursa ReleaseUsage çağrılır.
 ```
 
-## 14. API Tasarımı
+## 8. API Tasarımı
 
-### 14.1 Public / Frontend API
+### 8.1 Public / Frontend API
 
 ```text
 GET    /subscription/current
@@ -858,9 +841,7 @@ Not:
 
 endpointleri subscription-service içinde olmamalıdır. Bu bilgiler payment-service üzerinden sağlanmalıdır.
 
-
-
-### 14.2 Internal API
+### 8.2 Internal API
 
 ```text
 POST /internal/subscription/check-feature
@@ -875,7 +856,7 @@ POST /internal/subscription/payment-events
 
 Payment eventleri mümkünse HTTP callback yerine Redis Streams üzerinden consume edilmelidir.
 
-### 14.3 Admin API
+### 8.3 Admin API
 
 ```text
 GET    /admin/subscription/plans
@@ -900,9 +881,9 @@ POST   /admin/subscription/subscriptions/:id/reactivate
 POST   /admin/subscription/subscriptions/:id/cancel
 ```
 
-## 15. Event Tasarımı
+## 9. Event Tasarımı
 
-### 15.1 Producer Eventler
+### 9.1 Producer Eventler
 
 
 Stream Name:
@@ -930,7 +911,7 @@ subscription.usage.limit_exceeded
 subscription.usage.updated
 ```
 
-### 15.2 Consume Eventler
+### 9.2 Consume Eventler
 
 #### ● user-service eventleri
 
@@ -963,7 +944,7 @@ payment.refund.succeeded
 
 `payment.refund.succeeded` event’i abonelik iptali anlamına gelmez. Sadece ödeme tarafında iade olduğunu bildirir. Subscription-service bu event’e göre gerekirse abonelik durumunu admin policy doğrultusunda güncelleyebilir.
 
-## 16. Cache Stratejisi
+## 10. Cache Stratejisi
 
 Subscription kontrolü sık yapılacağı için Redis cache kullanılmalıdır.
 
@@ -998,7 +979,7 @@ Cache invalidation:
 
 
 
-## 17. Transaction ve Idempotency
+## 11. Transaction ve Idempotency
 
 Transaction içinde yapılması gereken işlemler:
 
@@ -1020,9 +1001,9 @@ Idempotency kuralları:
 - Aynı subscription için aynı anda birden fazla aktif plan change olmamalıdır.
 - Usage increment için gerekirse caller idempotency key kabul edilmelidir.
 
-## 18. Diğer Servislerle Entegrasyon
+## 12. Diğer Servislerle Entegrasyon
 
-### 18.1 auth-service
+### 12.1 auth-service
 
 Auth-service kimlik doğrulama ve token üretiminden sorumludur.
 Subscription-service auth-service tablosuna FK vermez.
@@ -1039,7 +1020,7 @@ JWT içine subscription summary eklenebilir:
 Ancak kritik kontrollerde subscription-service kaynak kabul edilmelidir.
 
 
-### 18.2 user-service
+### 12.2 user-service
 
 User-service tenant, clinic, user ve role bilgisinin sahibidir.
 
@@ -1053,20 +1034,20 @@ clinicId
 
 User/tenant oluşturulduğunda trial abonelik başlatılabilir.
 
-### 18.3 app-service
+### 12.3 app-service
 
 App-service feature katalog ve feature flag/config bilgisinin sahibidir.
 Subscription-service app-service’den feature referanslarını alır ve `SubscriptionFeatureRef` içinde projection olarak tutar.
 Subscription-service feature flag yönetmez.
 
-### 18.4 payment-service
+### 12.4 payment-service
 
 Payment-service ödeme ve fatura domain’inin sahibidir.
 Subscription-service ödeme başlatmak için payment-service çağırır.
 Payment sonucu event üzerinden subscription-service’e yansır.
 Subscription-service invoice, transaction, refund veya card token tutmaz.
 
-### 18.5 appointment-service
+### 12.5 appointment-service
 
 Appointment-service randevu oluşturmadan önce limit kontrolü yapar:
 
@@ -1076,7 +1057,7 @@ check-limit: appointment.monthly_count
 increment-usage: appointment.monthly_count
 ```
 
-### 18.6 chat-service
+### 12.6 chat-service
 
 Chat-service chat ve video görüşme için kontrol yapar:
 
@@ -1086,7 +1067,7 @@ check-feature: video_call.enabled
 check-limit: chat.monthly_message_count
 ```
 
-### 18.7 ai-service
+### 12.7 ai-service
 
 AI-service maliyetli işlemler için subscription-service’i kullanır:
 
@@ -1096,7 +1077,7 @@ reserve-usage: ai.token.monthly_count
 commit-usage: ai.token.monthly_count
 ```
 
-### 18.8 notify-service
+### 12.8 notify-service
 
 Notify-service SMS gibi ücretli bildirimlerde limit kontrolü yapabilir:
 
@@ -1105,7 +1086,7 @@ check-limit: notification.sms.monthly_count
 increment-usage: notification.sms.monthly_count
 ```
 
-### 18.9 store-service
+### 12.9 store-service
 
 Store-service store modülü ve ürün limiti için kontrol yapar:
 
@@ -1114,7 +1095,7 @@ check-feature: store.enabled
 check-limit: store.product.max_count
 ```
 
-## 19. Plan Feature Seti
+## 13. Plan Feature Seti
 
 ### Free Plan
 
@@ -1162,7 +1143,7 @@ notification.sms.monthly_count = 100
 
 ```text
 client.max_count = 500
-appointment.monthly_count = 2000
+appointment.monthly_count = 14.0
 chat.enabled = true
 video_call.enabled = true
 ai.menu_generate.monthly_count = 500
@@ -1174,7 +1155,7 @@ staff.max_count = 10
 notification.sms.monthly_count = 500
 ```
 
-## 20. Servis İç Mimari Önerisi
+## 14. Servis İç Mimari Önerisi
 
 ```text
 services/subscription-service
